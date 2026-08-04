@@ -1,0 +1,108 @@
+##############################################################
+# Visual Metrology Configuration
+#
+# This configuration is used by the Digital Part Definition
+# Builder (Stage 1) and Visual Measurement Intelligence
+# (Stage 2).
+#
+# NOTE:
+# The framework loads this configuration only when
+# engine.domain = visual_metrology.
+##############################################################
+
+
+##############################################################
+# GPT Configuration
+##############################################################
+
+gpt:
+
+  # GPT Vision Model
+  #
+  # Examples:
+  #   gpt-5
+  #   gpt-5-mini
+  #
+  model: gpt-5
+
+  # Sampling Temperature
+  #
+  # 0.0 = Fully deterministic (Recommended)
+  # 1.0 = Creative
+  #
+  temperature: 0.0
+
+
+##############################################################
+# Dataset Configuration
+##############################################################
+
+dataset:
+
+  # Directory containing engineering drawings.
+  #
+  # Every supported drawing inside this folder will be
+  # processed automatically.
+  #
+  input_directory: visual_metrology/data/train
+
+  # Supported drawing formats.
+  #
+  # Any file matching the extensions below will be
+  # considered for Digital Part Definition generation.
+  #
+  supported_formats:
+    - pdf
+    - png
+    - jpg
+    - jpeg
+    - bmp
+    - tif
+    - tiff
+
+
+##############################################################
+# Output Configuration
+##############################################################
+
+output:
+
+  # Directory where generated files are stored.
+  directory: visual_metrology/data/output
+
+  # Create a separate folder for every drawing.
+  #
+  # Example:
+  #
+  # output/
+  #   BSPB-10119/
+  #       BSPB-10119_raw.yaml
+  #       BSPB-10119_drawing_analysis.yaml
+  #       prompt.txt
+  #
+  create_drawing_folder: true
+
+  # Save raw GPT response.
+  save_raw_yaml: true
+
+  # Save validated Digital Part Definition.
+  save_dpd_yaml: true
+
+  # Save GPT system prompt.
+  save_prompt: true
+
+
+##############################################################
+# Validation Configuration
+##############################################################
+
+validation:
+
+  # Stop execution if mandatory sections are missing.
+  strict: true
+
+  # Mandatory sections expected in every Digital Part Definition.
+  required_fields:
+    - part_information
+    - units
+    - features

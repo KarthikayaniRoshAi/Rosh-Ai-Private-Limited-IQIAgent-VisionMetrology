@@ -1,0 +1,98 @@
+##############################################################
+# IQI Framework Configuration
+#
+# This is the master configuration file for the IQI Framework.
+# It controls which inspection engine to execute, the operating
+# mode, execution device, and framework-level settings.
+#
+# Supported Engines:
+#   - visual_inspection
+#   - visual_metrology
+#   - drawing_intelligence (Future)
+#   - ocr (Future)
+#   - barcode (Future)
+#   - thermal_inspection (Future)
+#   - xray_inspection (Future)
+#
+##############################################################
+
+application:
+
+  # Application Name
+  name: IQI
+
+  # Framework Version
+  version: 0.2
+
+
+##############################################################
+# Engine Configuration
+##############################################################
+
+engine:
+
+  # Inspection Domain
+  #
+  # Available Options:
+  #   visual_inspection
+  #   visual_metrology
+  #
+  domain: visual_metrology
+
+
+  # Execution Mode
+  #
+  # visual_inspection
+  #   train
+  #   test
+  #
+  # visual_metrology
+  #   train    -> Digital Part Definition Builder
+  #   infer    -> Visual Measurement Intelligence
+  #
+  mode: train
+
+
+  # Execution Profile
+  #
+  # Available:
+  #   default
+  #   development
+  #   production
+  #   benchmark
+  #
+  profile: default
+
+
+##############################################################
+# Device Configuration
+##############################################################
+
+device:
+
+  # Execution Device
+  #
+  # Available:
+  #   cpu
+  #   cuda
+  #   cuda:0
+  #   cuda:1
+  #
+  target: cpu
+
+
+##############################################################
+# Logging Configuration
+##############################################################
+
+logging:
+
+  # Log Level
+  #
+  # Available:
+  #   DEBUG
+  #   INFO
+  #   WARNING
+  #   ERROR
+  #
+  level: WARNING
