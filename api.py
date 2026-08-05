@@ -8,7 +8,7 @@ from typing import List, Dict
 from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException
 from dotenv import load_dotenv
 import yaml
-
+from pathlib import Path
 load_dotenv()
 
 from common.config_loader import ConfigLoader
@@ -28,45 +28,52 @@ EXECUTIONS_DB: Dict[str, Dict] = {}
 # Load main framework config at app startup
 main_config = ConfigLoader("configs/main_config.yaml").get()
 
-
 def load_generated_yaml_results(file_paths: List[str]) -> List[Dict]:
     """
     Finds and converts <part_name>_drawing_analysis.yaml into an array of JSON objects.
+    Uses absolute pathing to prevent working directory issues.
     """
     analysis_results = []
+    
+    # Get root directory of the project
+    base_dir = Path(__file__).resolve().parent
 
     for index, file_path in enumerate(file_paths, start=1):
-        # Extract filename without extension (e.g. BSPB-10004-010_LS0000681403_04_EN)
+        # Extract base filename without extension
         base_filename = os.path.splitext(os.path.basename(file_path))[0]
         
-        # Target YAML path: visual_metrology/data/output/<base_filename>/<base_filename>_drawing_analysis.yaml
-        target_yaml_path = os.path.join(
-            "visual_metrology", 
-            "data", 
-            "output", 
-            base_filename, 
-            f"{base_filename}_drawing_analysis.yaml"
-        )
+        # Build candidate paths (checks both relative to root and relative to visual_metrology)
+        candidate_paths = [
+            base_dir / "visual_metrology" / "data" / "output" / base_filename / f"{base_filename}_drawing_analysis.yaml",
+            base_dir / "data" / "output" / base_filename / f"{base_filename}_drawing_analysis.yaml"
+        ]
 
-        logger.info(f"Looking for drawing analysis YAML at: {target_yaml_path}")
+        target_yaml_path = None
+        for p in candidate_paths:
+            if p.exists():
+                target_yaml_path = p
+                break
+
+        print(f"Searching for output YAML for '{base_filename}'...")
 
         yaml_content = None
-        if os.path.exists(target_yaml_path):
+        if target_yaml_path and target_yaml_path.exists():
             try:
                 with open(target_yaml_path, 'r', encoding='utf-8') as f:
                     yaml_content = yaml.safe_load(f)
+                print(f"✓ Successfully loaded YAML: {target_yaml_path}")
             except Exception as read_err:
-                logger.error(f"Failed to read/parse YAML {target_yaml_path}: {str(read_err)}")
+                print(f"Error reading YAML {target_yaml_path}: {str(read_err)}")
                 yaml_content = {"error": f"Failed to parse YAML file: {str(read_err)}"}
         else:
-            logger.warning(f"Analysis YAML file not found: {target_yaml_path}")
-            yaml_content = {"error": "Analysis YAML file not found."}
+            print(f"⚠️ YAML file not found in candidates: {[str(p) for p in candidate_paths]}")
+            yaml_content = {"error": f"Analysis YAML file for '{base_filename}' not found."}
 
         # Build JSON item object
         analysis_results.append({
-            "id": f"drawing_analysis_{index}",  # Sequential item ID or UUID
+            "id": f"drawing_analysis_{index}",
             "drawing_name": base_filename,
-            "yaml_file_path": target_yaml_path,
+            "yaml_file_path": str(target_yaml_path) if target_yaml_path else "Not found",
             "data": yaml_content
         })
 
@@ -124,7 +131,7 @@ def process_drawings_task(execution_id: str, file_paths: List[str]):
         from visual_metrology import engine
         result = engine.run(vm_config)
 
-        # 🎯 READ & CONVERT THE OUTPUT YAML FILES TO JSON ARRAY
+        #  READ & CONVERT THE OUTPUT YAML FILES TO JSON ARRAY
         parsed_yaml_results = load_generated_yaml_results(file_paths)
 
         EXECUTIONS_DB[execution_id]["status"] = "completed"
