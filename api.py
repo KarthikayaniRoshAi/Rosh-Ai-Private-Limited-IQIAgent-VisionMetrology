@@ -11,7 +11,6 @@ from dotenv import load_dotenv
 import yaml
 from pathlib import Path
 load_dotenv()
-
 from common.config_loader import ConfigLoader
 from common.logger import logger
 from main import print_banner
@@ -136,7 +135,7 @@ def process_drawings_task(execution_id: str, file_paths: List[str]):
         parsed_yaml_results = load_generated_yaml_results(file_paths)
 
         EXECUTIONS_DB[execution_id]["status"] = "completed"
-        EXECUTIONS_DB[execution_id]["result"] = parsed_yaml_results
+        EXECUTIONS_DB[execution_id]["results"] = parsed_yaml_results
         print("✓ Metrology extraction and analysis completed successfully.")
 
     except Exception as e:
@@ -203,7 +202,7 @@ async def start_metrology_training(
             f"Execution session created (ID: {execution_id}).",
             f"Successfully uploaded {len(files)} drawing file(s) to server target."
         ],
-        "result": None,
+        "results": None,
         "error": None
     }
 
