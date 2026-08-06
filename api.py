@@ -1,11 +1,12 @@
 import io
+import json
 import os
 import sys
 import uuid
 import shutil
 import asyncio
 from typing import List, Dict
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException
+from fastapi import FastAPI, Form, UploadFile, File, BackgroundTasks, HTTPException
 from dotenv import load_dotenv
 import yaml
 from pathlib import Path
@@ -254,6 +255,49 @@ async def get_execution_results(execution_id: str):
         "execution_id": execution_id,
         "total_drawings": len(execution_data["result"]),
         "results": execution_data["result"]  
+    }
+
+    # Save Captured Layout Image & Normalized JSON
+@app.post("/api/v1/metrology/save-plc")
+async def save_part_layout(
+    project_id: str = Form(...),
+    annotations: str = Form(...),
+    image: UploadFile = File(...)
+):
+    """
+    Saves camera capture and normalized JSON annotations into visual_metrology dataset directory.
+    """
+    try:
+        parsed_annotations = json.loads(annotations)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON format: {str(e)}")
+
+    output_dir = os.path.join("visual_metrology", "data", "output", str(project_id), "part_layout")
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 1. Save Image File
+    image_path = os.path.join(output_dir, image.filename)
+    with open(image_path, "wb") as buffer:
+        buffer.write(await image.read())
+
+    # 2. Save Normalized JSON file
+    base_name = os.path.splitext(image.filename)[0]
+    json_path = os.path.join(output_dir, f"{base_name}_annotations.json")
+
+    payload = {
+        "project_id": project_id,
+        "image_file": image.filename,
+        "annotations": parsed_annotations
+    }
+
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+    return {
+        "status": "success",
+        "message": "Part layout and ground truth JSON saved successfully.",
+        "image_path": image_path,
+        "json_path": json_path
     }
 
 
