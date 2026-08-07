@@ -126,12 +126,28 @@ def process_drawings_task(execution_id: str, file_paths: List[str]):
             vm_config["training"] = {}
         vm_config["training"]["active_pdf_files"] = file_paths
 
+        # --- CLEANUP OUTPUT DIRECTORY FOR CURRENT BATCH ---
+        base_dir = Path(__file__).resolve().parent
+        output_base_dir = base_dir / "visual_metrology" / "data" / "output"
+
+        for file_path in file_paths:
+            base_filename = os.path.splitext(os.path.basename(file_path))[0]
+            target_out_dir = output_base_dir / base_filename
+            
+            # If the output directory for this part already exists from an old run, wipe it!
+            if target_out_dir.exists() and target_out_dir.is_dir():
+                try:
+                    shutil.rmtree(target_out_dir)
+                    print(f"Cleared old output directory for '{base_filename}'.")
+                except Exception as clean_err:
+                    print(f"Warning: Could not clear old output dir {target_out_dir}: {clean_err}")
+
         print(f"Executing Visual Metrology engine for {len(file_paths)} drawing(s)...")
 
         from visual_metrology import engine
         result = engine.run(vm_config)
 
-        #  READ & CONVERT THE OUTPUT YAML FILES TO JSON ARRAY
+        #  CONVERT THE OUTPUT YAML FILES TO JSON ARRAY
         parsed_yaml_results = load_generated_yaml_results(file_paths)
 
         EXECUTIONS_DB[execution_id]["status"] = "completed"
@@ -147,6 +163,7 @@ def process_drawings_task(execution_id: str, file_paths: List[str]):
     finally:
         # Restore normal terminal output
         sys.stdout = original_stdout
+
 
 @app.post("/api/v1/metrology/train")
 async def start_metrology_training(
@@ -177,6 +194,17 @@ async def start_metrology_training(
         "training_pdf_dir", "visual_metrology/data/train"
     )
     os.makedirs(upload_dir, exist_ok=True)
+
+    # Delete old files before writing newly uploaded batch ---
+    for existing_item in os.listdir(upload_dir):
+        item_path = os.path.join(upload_dir, existing_item)
+        try:
+            if os.path.isfile(item_path) or os.path.islink(item_path):
+                os.unlink(item_path)
+            elif os.path.isdir(item_path):
+                shutil.rmtree(item_path)
+        except Exception as clean_err:
+            logger.warning(f"Failed to clear old train file {item_path}: {clean_err}")
 
     saved_file_paths = []
     for file in files:
@@ -249,11 +277,15 @@ async def get_execution_results(execution_id: str):
             "results": []
         }
 
+    results = execution_data.get("results") or []
+
     return {
         "status": "completed",
         "execution_id": execution_id,
-        "total_drawings": len(execution_data["result"]),
-        "results": execution_data["result"]  
+        # "total_drawings": len(execution_data["result"]),
+        # "results": execution_data["result"]  
+        "total_drawings": len(results),
+        "results": results
     }
 
     # Save Captured Layout Image & Normalized JSON
