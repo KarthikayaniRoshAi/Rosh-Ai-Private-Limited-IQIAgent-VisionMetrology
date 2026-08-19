@@ -14,6 +14,7 @@ load_dotenv()
 from common.config_loader import ConfigLoader
 from common.logger import logger
 from main import print_banner
+import glob
 
 app = FastAPI(
     title="IQI™ Visual Metrology Engine API",
@@ -66,7 +67,7 @@ def load_generated_yaml_results(file_paths: List[str]) -> List[Dict]:
                 print(f"Error reading YAML {target_yaml_path}: {str(read_err)}")
                 yaml_content = {"error": f"Failed to parse YAML file: {str(read_err)}"}
         else:
-            print(f"⚠️ YAML file not found in candidates: {[str(p) for p in candidate_paths]}")
+            print(f" YAML file not found in candidates: {[str(p) for p in candidate_paths]}")
             yaml_content = {"error": f"Analysis YAML file for '{base_filename}' not found."}
 
         # Build JSON item object
@@ -331,6 +332,133 @@ async def save_part_layout(
         "json_path": json_path
     }
 
+
+@app.post("/api/v1/metrology/inspect")
+async def verify_inspection(
+    project_id: str = Form(...),
+    scale_mm_per_pixel: float = Form(default=0.05), # Scale: e.g., 1 pixel = 0.05 mm
+    camera_width: int = Form(default=1920),         # Image frame pixel width
+    camera_height: int = Form(default=1080)         # Image frame pixel height
+):
+    """
+    Converts normalized fractional coordinates to mm and cross-inspects 
+    them against engineering drawing specifications and tolerances.
+    """
+    base_dir = Path(__file__).resolve().parent
+
+    # 1. Read Ground Truth JSON (Saved from /save-plc containing normalized fractions)
+    layout_dir = base_dir / "visual_metrology" / "data" / "output" / str(project_id) / "part_layout"
+    json_files = list(layout_dir.glob("*_annotations.json"))
+
+    if not json_files:
+        raise HTTPException(
+            status_code=404, 
+            detail=f"No layout annotations found for project '{project_id}' at {layout_dir}"
+        )
+
+    with open(json_files[0], "r", encoding="utf-8") as f:
+        ground_truth_data = json.load(f)
+
+    # 2. Read Engineering Drawing Specifications YAML (Generated during /train)
+    output_dir = base_dir / "visual_metrology" / "data" / "output"
+    yaml_files = list(output_dir.glob("**/*_drawing_analysis.yaml"))
+
+    if not yaml_files:
+        raise HTTPException(
+            status_code=404, 
+            detail="No engineering drawing analysis YAML files found in output directory."
+        )
+
+    with open(yaml_files[0], "r", encoding="utf-8") as f:
+        drawing_specs = yaml.safe_load(f) or {}
+
+    # Build tag-indexed lookup map from engineering drawing
+    spec_lookup = {}
+    for view in drawing_specs.get("views", []):
+        for feature in view.get("features", []):
+            tag_key = feature.get("tag_name") or feature.get("feature_type")
+            if tag_key:
+                spec_lookup[tag_key.lower().strip()] = feature
+
+    # 3. Perform Conversion (Fraction -> Pixels -> mm) & Inspection
+    inspection_results = []
+    overall_status = "PASS"
+
+    annotations = ground_truth_data.get("annotations", [])
+
+    for annot in annotations:
+        tag_name = str(annot.get("tag_name", "")).lower().strip()
+        tag_id = annot.get("tag_id", "N/A")
+
+        # --- A. Extract Normalized Fraction (0.0 to 1.0) ---
+        norm_w = float(annot.get("width", 0.0))
+        norm_h = float(annot.get("height", 0.0))
+
+        # --- B. Convert Normalized Fraction -> Pixels ---
+        pixel_w = norm_w * camera_width
+        pixel_h = norm_h * camera_height
+
+        # --- C. Convert Pixels -> Millimeters (mm) ---
+        measured_pixel_size = max(pixel_w, pixel_h)
+        measured_mm = measured_pixel_size * scale_mm_per_pixel
+
+        # --- D. Match & Cross-Inspect against Engineering Drawing Specs ---
+        matching_spec = spec_lookup.get(tag_name)
+
+        if matching_spec:
+            nominal_mm = float(matching_spec.get("nominal_size", 0.0))
+            upper_tol = float(matching_spec.get("upper_deviation", 0.1))
+            lower_tol = float(matching_spec.get("lower_deviation", -0.1))
+
+            max_limit = nominal_mm + upper_tol
+            min_limit = nominal_mm + lower_tol
+
+            # Calculate Difference (Delta)
+            delta_mm = measured_mm - nominal_mm
+
+            # Tolerance Check
+            is_pass = min_limit <= measured_mm <= max_limit
+            feature_status = "PASS" if is_pass else "FAIL"
+
+            if not is_pass:
+                overall_status = "FAIL"
+
+            inspection_results.append({
+                "tag_id": tag_id,
+                "feature_tag": annot.get("tag_name"),
+                "normalized_fraction": {
+                    "norm_width": norm_w,
+                    "norm_height": norm_h
+                },
+                "calculated_pixels": round(measured_pixel_size, 2),
+                "measured_mm": round(measured_mm, 3),
+                "drawing_nominal_mm": round(nominal_mm, 3),
+                "delta_mm": round(delta_mm, 3),
+                "tolerance_range_mm": [round(min_limit, 3), round(max_limit, 3)],
+                "status": feature_status
+            })
+        else:
+            inspection_results.append({
+                "tag_id": tag_id,
+                "feature_tag": annot.get("tag_name"),
+                "normalized_fraction": {"norm_width": norm_w, "norm_height": norm_h},
+                "measured_mm": round(measured_mm, 3),
+                "drawing_nominal_mm": "N/A",
+                "delta_mm": "N/A",
+                "status": "UNMATCHED_TAG"
+            })
+
+    return {
+        "status": "completed",
+        "project_id": project_id,
+        "overall_result": overall_status,
+        "conversion_params": {
+            "scale_mm_per_pixel": scale_mm_per_pixel,
+            "camera_resolution": f"{camera_width}x{camera_height}"
+        },
+        "total_features_inspected": len(inspection_results),
+        "details": inspection_results
+    }
 
 if __name__ == "__main__":
     import uvicorn
