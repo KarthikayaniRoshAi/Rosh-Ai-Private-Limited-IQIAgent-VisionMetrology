@@ -334,18 +334,11 @@ async def save_part_layout(
 
 @app.post("/api/v1/metrology/inspect")
 async def verify_inspection(
-    project_id: str = Form(...)
+   part_number: str = Form(...)
 ):
-    """
-    Temporary inspection endpoint.
-
-    Currently returns dummy Measurement Engine results.
-    Later this endpoint will call the actual Measurement Engine
-    and return its final measurement results.
-    """
-
+   
     logger.info(
-        f"Inspection requested for project_id={project_id}"
+        f"Inspection requested for part_number={part_number}"
     )
 
     dummy_results = [
@@ -479,7 +472,7 @@ async def verify_inspection(
 
         "inspection_id": str(uuid.uuid4()),
 
-        "project_id": project_id,
+        "part_number": part_number,
 
         "overall_result": overall_result,
 
