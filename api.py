@@ -342,118 +342,154 @@ async def verify_inspection(
     )
 
     dummy_results = [
-        {
-            "feature_id": "F-OD-001",
-            "feature_name": "Outer diameter",
-            "measurement_type": "diameter",
+    {
+        "feature_id": "F-OD-001",
+        "feature_name": "Outer diameter",
+        "measurement_type": "diameter",
 
-            "reference": {
-                "nominal": 260.0,
-                "lower_limit": 259.7,
-                "upper_limit": 260.1,
-                "unit": "mm"
-            },
-
-            "actual": {
-                "value": 259.82,
-                "unit": "mm"
-            },
-
-            "deviation": -0.18,
-
-            "status": "PASS"
+        "reference": {
+            "nominal": 260.0,
+            "lower_limit": 259.7,
+            "upper_limit": 260.1,
+            "unit": "mm"
         },
 
-        {
-            "feature_id": "F-ID-001",
-            "feature_name": "Through bore",
-            "measurement_type": "diameter",
-
-            "reference": {
-                "nominal": 212.0,
-                "lower_limit": 211.7,
-                "upper_limit": 212.1,
-                "unit": "mm"
-            },
-
-            "actual": {
-                "value": 212.04,
-                "unit": "mm"
-            },
-
-            "deviation": 0.04,
-
-            "status": "PASS"
+        "actual": {
+            "value": 259.82,
+            "unit": "mm"
         },
 
-        {
-            "feature_id": "F-CB-001",
-            "feature_name": "Counterbore/register diameter",
-            "measurement_type": "diameter",
+        "deviation": -0.18,
 
-            "reference": {
-                "nominal": 230.0,
-                "lower_limit": 229.7,
-                "upper_limit": 230.1,
-                "unit": "mm"
-            },
-
-            "actual": {
-                "value": 230.16,
-                "unit": "mm"
-            },
-
-            "deviation": 0.16,
-
-            "status": "FAIL"
+        "coordinates": {
+            "left": 0.25,
+            "top": 0.10,
+            "width": 0.50,
+            "height": 0.50
         },
 
-        {
-            "feature_id": "F-THK-001",
-            "feature_name": "Main flange thickness",
-            "measurement_type": "thickness",
+        "status": "PASS"
+    },
 
-            "reference": {
-                "nominal": 18.0,
-                "lower_limit": 17.5,
-                "upper_limit": 18.5,
-                "unit": "mm"
-            },
+    {
+        "feature_id": "F-ID-001",
+        "feature_name": "Through bore",
+        "measurement_type": "diameter",
 
-            "actual": {
-                "value": 18.12,
-                "unit": "mm"
-            },
-
-            "deviation": 0.12,
-
-            "status": "PASS"
+        "reference": {
+            "nominal": 212.0,
+            "lower_limit": 211.7,
+            "upper_limit": 212.1,
+            "unit": "mm"
         },
 
-        {
-            "feature_id": "F-CH-001",
-            "feature_name": "Chamfer set A",
-            "measurement_type": "chamfer",
+        "actual": {
+            "value": 212.04,
+            "unit": "mm"
+        },
 
-            "reference": {
-                "size": 1.5,
-                "angle": 45.0,
-                "unit": "mm / deg"
-            },
+        "deviation": 0.04,
 
-            "actual": {
-                "size": 1.32,
-                "angle": 44.2
-            },
+        "coordinates": {
+            "left": 0.3150067678510378,
+            "top": 0.12619653643567716,
+            "width": 0.04188675395088004,
+            "height": 0.049501978991469686
+        },
 
-            "deviation": {
-                "size": -0.18,
-                "angle": -0.8
-            },
+        "status": "PASS"
+    },
 
-            "status": "FAIL"
-        }
-    ]
+    {
+        "feature_id": "F-CB-001",
+        "feature_name": "Counterbore/register diameter",
+        "measurement_type": "diameter",
+
+        "reference": {
+            "nominal": 230.0,
+            "lower_limit": 229.7,
+            "upper_limit": 230.1,
+            "unit": "mm"
+        },
+
+        "actual": {
+            "value": 230.16,
+            "unit": "mm"
+        },
+
+        "deviation": 0.16,
+
+        "coordinates": {
+            "left": 0.28,
+            "top": 0.28,
+            "width": 0.44,
+            "height": 0.44
+        },
+
+        "status": "FAIL"
+    },
+
+    {
+        "feature_id": "F-THK-001",
+        "feature_name": "Main flange thickness",
+        "measurement_type": "thickness",
+
+        "reference": {
+            "nominal": 18.0,
+            "lower_limit": 17.5,
+            "upper_limit": 18.5,
+            "unit": "mm"
+        },
+
+        "actual": {
+            "value": 18.12,
+            "unit": "mm"
+        },
+
+        "deviation": 0.12,
+
+        "coordinates": {
+            "left": 0.15,
+            "top": 0.72,
+            "width": 0.70,
+            "height": 0.12
+        },
+
+        "status": "PASS"
+    },
+
+    {
+        "feature_id": "F-CH-001",
+        "feature_name": "Chamfer set A",
+        "measurement_type": "chamfer",
+
+        "reference": {
+            "size": 1.5,
+            "angle": 45.0,
+            "unit": "mm / deg"
+        },
+
+        "actual": {
+            "size": 1.32,
+            "angle": 44.2
+        },
+
+        "deviation": {
+            "size": -0.18,
+            "angle": -0.8
+        },
+
+        "coordinates": {
+            "left": 0.08,
+            "top": 0.08,
+            "width": 0.20,
+            "height": 0.20
+        },
+
+        "status": "FAIL"
+    }
+]
+
 
     passed = sum(
         1 for result in dummy_results
