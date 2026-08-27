@@ -344,6 +344,7 @@ async def verify_inspection(
     dummy_results = [
     {
         "feature_id": "F-OD-001",
+        "golden_feature_id": "F-OD",
         "feature_name": "Outer diameter",
         "measurement_type": "diameter",
 
@@ -361,18 +362,21 @@ async def verify_inspection(
 
         "deviation": -0.18,
 
-        "coordinates": {
-            "left": 0.25,
-            "top": 0.10,
-            "width": 0.50,
-            "height": 0.50
-        },
+        "coordinates": [
+            {
+                "left": 0.271677359063449,
+                "top": 0.21783582737876625,
+                "width": 0.4989741085531881,
+                "height": 0.5164741212086953
+            }
+        ],
 
         "status": "PASS"
     },
 
     {
         "feature_id": "F-ID-001",
+        "golden_feature_id": "F-ID",
         "feature_name": "Through bore",
         "measurement_type": "diameter",
 
@@ -390,18 +394,21 @@ async def verify_inspection(
 
         "deviation": 0.04,
 
-        "coordinates": {
-            "left": 0.3150067678510378,
-            "top": 0.12619653643567716,
-            "width": 0.04188675395088004,
-            "height": 0.049501978991469686
-        },
+        "coordinates": [
+            {
+                "left": 0.393794706683045,
+                "top": 0.36314888521036526,
+                "width": 0.3085760934473663,
+                "height": 0.25386016127207056
+            }
+        ],
 
         "status": "PASS"
     },
 
     {
         "feature_id": "F-CB-001",
+        "golden_feature_id": "F-HP6",
         "feature_name": "Counterbore/register diameter",
         "measurement_type": "diameter",
 
@@ -419,18 +426,63 @@ async def verify_inspection(
 
         "deviation": 0.16,
 
-        "coordinates": {
-            "left": 0.28,
-            "top": 0.28,
-            "width": 0.44,
-            "height": 0.44
-        },
+        "coordinates": [
+            {
+                "left": 0.30713078256591236,
+                "top": 0.12154404206867052,
+                "width": 0.06565448796752477,
+                "height": 0.06127659065187911
+            },
+            {
+                "left": 0.20733596085527473,
+                "top": 0.21958658711167708,
+                "width": 0.047271231336617814,
+                "height": 0.06477811011770077
+            },
+            {
+                "left": 0.7890347242475441,
+                "top": 0.17231607432308463,
+                "width": 0.04858432109596833,
+                "height": 0.09279026584427405
+            },
+            {
+                "left": 0.7956001730442965,
+                "top": 0.6747841176684932,
+                "width": 0.049897410855318736,
+                "height": 0.08753798664554158
+            },
+            {
+                "left": 0.6761090049434014,
+                "top": 0.7763281821773215,
+                "width": 0.04464505181791689,
+                "height": 0.0630273503847899
+            },
+            {
+                "left": 0.3242009494374688,
+                "top": 0.7693251432456781,
+                "width": 0.047271231336617814,
+                "height": 0.05952583091896835
+            },
+            {
+                "left": 0.22046685844877967,
+                "top": 0.6695318384697607,
+                "width": 0.04595814157726735,
+                "height": 0.06477811011770085
+            },
+            {
+                "left": 0.6656042868685975,
+                "top": 0.09003036687627555,
+                "width": 0.043331962058566265,
+                "height": 0.05777507118605743
+            }
+        ],
 
         "status": "FAIL"
     },
 
     {
         "feature_id": "F-THK-001",
+        "golden_feature_id": "F-THICK-BASE",
         "feature_name": "Main flange thickness",
         "measurement_type": "thickness",
 
@@ -448,18 +500,21 @@ async def verify_inspection(
 
         "deviation": 0.12,
 
-        "coordinates": {
-            "left": 0.15,
-            "top": 0.72,
-            "width": 0.70,
-            "height": 0.12
-        },
+        "coordinates": [
+            {
+                "left": 0.05370445901126682,
+                "top": 0.00774465942946647,
+                "width": 0.12343043737894653,
+                "height": 0.5900060299909502
+            }
+        ],
 
         "status": "PASS"
     },
 
     {
         "feature_id": "F-CH-001",
+        "golden_feature_id": "F-EDGE-CHAMFER-15",
         "feature_name": "Chamfer set A",
         "measurement_type": "chamfer",
 
@@ -479,12 +534,7 @@ async def verify_inspection(
             "angle": -0.8
         },
 
-        "coordinates": {
-            "left": 0.08,
-            "top": 0.08,
-            "width": 0.20,
-            "height": 0.20
-        },
+        "coordinates": [],
 
         "status": "FAIL"
     }
