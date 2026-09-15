@@ -8,13 +8,20 @@ import asyncio
 from typing import List, Dict
 from fastapi import FastAPI, Form, UploadFile, File, BackgroundTasks, HTTPException
 from dotenv import load_dotenv
+from fastapi.responses import FileResponse
 import yaml
 from pathlib import Path
+
+from visual_metrics.metrics_computation import run_metrology_inspection
 load_dotenv()
 from common.config_loader import ConfigLoader
 from common.logger import logger
 from main import print_banner
 import glob
+import cv2
+import numpy as np
+import json
+from pathlib import Path
 
 app = FastAPI(
     title="IQI™ Visual Metrology Engine API",
@@ -289,419 +296,102 @@ async def get_execution_results(execution_id: str):
         "results": results
     }
 
-    # Save Captured Layout Image & Normalized JSON
-@app.post("/api/v1/metrology/save-plc")
-async def save_part_layout(
-    project_id: str = Form(...),
-    annotations: str = Form(...),
-    image: UploadFile = File(...)
-):
-    """
-    Saves camera capture and normalized JSON annotations into visual_metrology dataset directory.
-    """
-    try:
-        parsed_annotations = json.loads(annotations)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid JSON format: {str(e)}")
+# @app.post("/api/v1/metrology/inspect")
+# async def verify_inspection(
+#     part_number: str = Form(...),
+#     height: float = Form(None),  # Capture the incoming height from UI/backend
+#     image: UploadFile = File(None),
+#     file: UploadFile = File(None)
+# ):
+#     logger.info(f"Live inspection requested for part_number={part_number} with height={height}")
 
-    output_dir = os.path.join("visual_metrology", "data", "output", str(project_id), "part_layout")
-    os.makedirs(output_dir, exist_ok=True)
+#     # 1. Resolve image file object (handling either 'image' or 'file' key)
+#     uploaded_image = image or file
+#     if not uploaded_image:
+#         raise HTTPException(status_code=400, detail="Image file is required.")
 
-    # 1. Save Image File
-    image_path = os.path.join(output_dir, image.filename)
-    with open(image_path, "wb") as buffer:
-        buffer.write(await image.read())
+#     # 2. Save the incoming UI image temporarily to disk so OpenCV can read it via path
+#     try:
+#         base_dir = Path(__file__).resolve().parent
+#         temp_dir = base_dir / "visual_metrology" / "data" / "temp"
+#         temp_dir.mkdir(parents=True, exist_ok=True)
+        
+#         temp_image_path = temp_dir / uploaded_image.filename
+#         with open(temp_image_path, "wb+") as destination:
+#             shutil.copyfileobj(uploaded_image.file, destination)
+            
+#         logger.info(f"Saved temporary inspection frame to: {temp_image_path}")
+#     except Exception as io_err:
+#         raise HTTPException(status_code=500, detail=f"Failed to save temporary image: {str(io_err)}")
 
-    # 2. Save Normalized JSON file
-    base_name = os.path.splitext(image.filename)[0]
-    json_path = os.path.join(output_dir, f"{base_name}_annotations.json")
+#     # 3. Fallback product height if not provided (defaulting safely or raising an error if mandatory)
+#     product_height = height if height is not None else 0.0
 
-    payload = {
-        "project_id": project_id,
-        "image_file": image.filename,
-        "annotations": parsed_annotations
-    }
+#     # 4. Run the dynamic metrology engine validation from metrics_computation.py
+#     try:
+#         report_data = run_metrology_inspection(
+#             image_path=temp_image_path, 
+#             product_height_mm=product_height
+#         )
+#     except Exception as engine_err:
+#         logger.error(f"Metrology computation engine failed: {str(engine_err)}")
+#         raise HTTPException(status_code=500, detail=f"Inspection processing error: {str(engine_err)}")
 
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+#     # 5. Return the full structured validation report back to the caller
+#     return {
+#         "status": "completed",
+#         "inspection_id": str(uuid.uuid4()),
+#         "part_number": part_number,
+#         "product_height_mm": product_height,
+#         **report_data
+#     }
 
-    return {
-        "status": "success",
-        "message": "Part layout and ground truth JSON saved successfully.",
-        "image_path": image_path,
-        "json_path": json_path
-    }
 
 @app.post("/api/v1/metrology/inspect")
 async def verify_inspection(
-   part_number: str = Form(...)
+    part_number: str = Form(...),
+    height: float = Form(None),
+    image: UploadFile = File(None),
+    file: UploadFile = File(None)
 ):
-   
-    logger.info(
-        f"Inspection requested for part_number={part_number}"
-    )
+    logger.info(f"Live inspection requested for part_number={part_number} with height={height}")
 
-    dummy_results = [
-    {
-        "feature_id": "F-OD-001",
-        "golden_feature_id": "F-OD",
-        "feature_name": "Outer diameter",
-        "measurement_type": "diameter",
+    uploaded_image = image or file
+    if not uploaded_image:
+        raise HTTPException(status_code=400, detail="Image file is required.")
 
-        "reference": {
-            "nominal": 260.0,
-            "lower_limit": 259.7,
-            "upper_limit": 260.1,
-            "unit": "mm"
-        },
+    try:
+        base_dir = Path(__file__).resolve().parent
+        temp_dir = base_dir / "visual_metrology" / "data" / "temp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        
+        temp_image_path = temp_dir / uploaded_image.filename
+        with open(temp_image_path, "wb+") as destination:
+            shutil.copyfileobj(uploaded_image.file, destination)
+    except Exception as io_err:
+        raise HTTPException(status_code=500, detail=f"Failed to save temporary image: {str(io_err)}")
 
-        "actual": {
-            "value": 259.82,
-            "unit": "mm"
-        },
+    product_height = height if height is not None else 0.0
 
-        "deviation": -0.18,
+    try:
+        report_data = run_metrology_inspection(
+            image_path=temp_image_path, 
+            product_height_mm=product_height
+        )
+    except Exception as engine_err:
+        logger.error(f"Metrology computation engine failed: {str(engine_err)}")
+        raise HTTPException(status_code=500, detail=f"Inspection processing error: {str(engine_err)}")
 
-        "coordinates": [
-            {
-                "left": 0.271677359063449,
-                "top": 0.21783582737876625,
-                "width": 0.4989741085531881,
-                "height": 0.5164741212086953
-            }
-        ],
-
-        "status": "PASS"
-    },
-
-    {
-        "feature_id": "F-ID-001",
-        "golden_feature_id": "F-ID",
-        "feature_name": "Through bore",
-        "measurement_type": "diameter",
-
-        "reference": {
-            "nominal": 212.0,
-            "lower_limit": 211.7,
-            "upper_limit": 212.1,
-            "unit": "mm"
-        },
-
-        "actual": {
-            "value": 212.04,
-            "unit": "mm"
-        },
-
-        "deviation": 0.04,
-
-        "coordinates": [
-            {
-                "left": 0.393794706683045,
-                "top": 0.36314888521036526,
-                "width": 0.3085760934473663,
-                "height": 0.25386016127207056
-            }
-        ],
-
-        "status": "PASS"
-    },
-
-    {
-        "feature_id": "F-CB-001",
-        "golden_feature_id": "F-HP6",
-        "feature_name": "Counterbore/register diameter",
-        "measurement_type": "diameter",
-
-        "reference": {
-            "nominal": 230.0,
-            "lower_limit": 229.7,
-            "upper_limit": 230.1,
-            "unit": "mm"
-        },
-
-        "actual": {
-            "value": 230.16,
-            "unit": "mm"
-        },
-
-        "deviation": 0.16,
-
-        "coordinates": [
-            {
-                "left": 0.30713078256591236,
-                "top": 0.12154404206867052,
-                "width": 0.06565448796752477,
-                "height": 0.06127659065187911
-            },
-            {
-                "left": 0.20733596085527473,
-                "top": 0.21958658711167708,
-                "width": 0.047271231336617814,
-                "height": 0.06477811011770077
-            },
-            {
-                "left": 0.7890347242475441,
-                "top": 0.17231607432308463,
-                "width": 0.04858432109596833,
-                "height": 0.09279026584427405
-            },
-            {
-                "left": 0.7956001730442965,
-                "top": 0.6747841176684932,
-                "width": 0.049897410855318736,
-                "height": 0.08753798664554158
-            },
-            {
-                "left": 0.6761090049434014,
-                "top": 0.7763281821773215,
-                "width": 0.04464505181791689,
-                "height": 0.0630273503847899
-            },
-            {
-                "left": 0.3242009494374688,
-                "top": 0.7693251432456781,
-                "width": 0.047271231336617814,
-                "height": 0.05952583091896835
-            },
-            {
-                "left": 0.22046685844877967,
-                "top": 0.6695318384697607,
-                "width": 0.04595814157726735,
-                "height": 0.06477811011770085
-            },
-            {
-                "left": 0.6656042868685975,
-                "top": 0.09003036687627555,
-                "width": 0.043331962058566265,
-                "height": 0.05777507118605743
-            }
-        ],
-
-        "status": "FAIL"
-    },
-
-    {
-        "feature_id": "F-THK-001",
-        "golden_feature_id": "F-THICK-BASE",
-        "feature_name": "Main flange thickness",
-        "measurement_type": "thickness",
-
-        "reference": {
-            "nominal": 18.0,
-            "lower_limit": 17.5,
-            "upper_limit": 18.5,
-            "unit": "mm"
-        },
-
-        "actual": {
-            "value": 18.12,
-            "unit": "mm"
-        },
-
-        "deviation": 0.12,
-
-        "coordinates": [
-            {
-                "left": 0.05370445901126682,
-                "top": 0.00774465942946647,
-                "width": 0.12343043737894653,
-                "height": 0.5900060299909502
-            }
-        ],
-
-        "status": "PASS"
-    },
-
-    {
-        "feature_id": "F-CH-001",
-        "golden_feature_id": "F-EDGE-CHAMFER-15",
-        "feature_name": "Chamfer set A",
-        "measurement_type": "chamfer",
-
-        "reference": {
-            "size": 1.5,
-            "angle": 45.0,
-            "unit": "mm / deg"
-        },
-
-        "actual": {
-            "size": 1.32,
-            "angle": 44.2
-        },
-
-        "deviation": {
-            "size": -0.18,
-            "angle": -0.8
-        },
-
-        "coordinates": [],
-
-        "status": "FAIL"
-    }
-]
-
-
-    passed = sum(
-        1 for result in dummy_results
-        if result["status"] == "PASS"
-    )
-
-    failed = sum(
-        1 for result in dummy_results
-        if result["status"] == "FAIL"
-    )
-
-    overall_result = "PASS" if failed == 0 else "FAIL"
-
+    # Return standard JSON response payload containing all data cleanly in the body
     return {
         "status": "completed",
-
         "inspection_id": str(uuid.uuid4()),
-
         "part_number": part_number,
-
-        "overall_result": overall_result,
-
-        "summary": {
-            "total_features": len(dummy_results),
-            "passed": passed,
-            "failed": failed
-        },
-
-        "results": dummy_results
+        **report_data
     }
 
 if __name__ == "__main__":
     import uvicorn
     # Start ASGI Uvicorn server on port 8001
     uvicorn.run("api:app", host="0.0.0.0", port=8001, reload=True)
-
-
-
-# @app.post("/api/v1/metrology/inspect")
-# async def verify_inspection(
-#     project_id: str = Form(...),
-#     scale_mm_per_pixel: float = Form(default=0.05), # Scale: e.g., 1 pixel = 0.05 mm
-#     camera_width: int = Form(default=1920),         # Image frame pixel width
-#     camera_height: int = Form(default=1080)         # Image frame pixel height
-# ):
-#     """
-#     Converts normalized fractional coordinates to mm and cross-inspects 
-#     them against engineering drawing specifications and tolerances.
-#     """
-#     base_dir = Path(__file__).resolve().parent
-
-#     # 1. Read Ground Truth JSON (Saved from /save-plc containing normalized fractions)
-#     layout_dir = base_dir / "visual_metrology" / "data" / "output" / str(project_id) / "part_layout"
-#     json_files = list(layout_dir.glob("*_annotations.json"))
-
-#     if not json_files:
-#         raise HTTPException(
-#             status_code=404, 
-#             detail=f"No layout annotations found for project '{project_id}' at {layout_dir}"
-#         )
-
-#     with open(json_files[0], "r", encoding="utf-8") as f:
-#         ground_truth_data = json.load(f)
-
-#     # 2. Read Engineering Drawing Specifications YAML (Generated during /train)
-#     output_dir = base_dir / "visual_metrology" / "data" / "output"
-#     yaml_files = list(output_dir.glob("**/*_drawing_analysis.yaml"))
-
-#     if not yaml_files:
-#         raise HTTPException(
-#             status_code=404, 
-#             detail="No engineering drawing analysis YAML files found in output directory."
-#         )
-
-#     with open(yaml_files[0], "r", encoding="utf-8") as f:
-#         drawing_specs = yaml.safe_load(f) or {}
-
-#     # Build tag-indexed lookup map from engineering drawing
-#     spec_lookup = {}
-#     for view in drawing_specs.get("views", []):
-#         for feature in view.get("features", []):
-#             tag_key = feature.get("tag_name") or feature.get("feature_type")
-#             if tag_key:
-#                 spec_lookup[tag_key.lower().strip()] = feature
-
-#     # 3. Perform Conversion (Fraction -> Pixels -> mm) & Inspection
-#     inspection_results = []
-#     overall_status = "PASS"
-
-#     annotations = ground_truth_data.get("annotations", [])
-
-#     for annot in annotations:
-#         tag_name = str(annot.get("tag_name", "")).lower().strip()
-#         tag_id = annot.get("tag_id", "N/A")
-
-#         # --- A. Extract Normalized Fraction (0.0 to 1.0) ---
-#         norm_w = float(annot.get("width", 0.0))
-#         norm_h = float(annot.get("height", 0.0))
-
-#         # --- B. Convert Normalized Fraction -> Pixels ---
-#         pixel_w = norm_w * camera_width
-#         pixel_h = norm_h * camera_height
-
-#         # --- C. Convert Pixels -> Millimeters (mm) ---
-#         measured_pixel_size = max(pixel_w, pixel_h)
-#         measured_mm = measured_pixel_size * scale_mm_per_pixel
-
-#         # --- D. Match & Cross-Inspect against Engineering Drawing Specs ---
-#         matching_spec = spec_lookup.get(tag_name)
-
-#         if matching_spec:
-#             nominal_mm = float(matching_spec.get("nominal_size", 0.0))
-#             upper_tol = float(matching_spec.get("upper_deviation", 0.1))
-#             lower_tol = float(matching_spec.get("lower_deviation", -0.1))
-
-#             max_limit = nominal_mm + upper_tol
-#             min_limit = nominal_mm + lower_tol
-
-#             # Calculate Difference (Delta)
-#             delta_mm = measured_mm - nominal_mm
-
-#             # Tolerance Check
-#             is_pass = min_limit <= measured_mm <= max_limit
-#             feature_status = "PASS" if is_pass else "FAIL"
-
-#             if not is_pass:
-#                 overall_status = "FAIL"
-
-#             inspection_results.append({
-#                 "tag_id": tag_id,
-#                 "feature_tag": annot.get("tag_name"),
-#                 "normalized_fraction": {
-#                     "norm_width": norm_w,
-#                     "norm_height": norm_h
-#                 },
-#                 "calculated_pixels": round(measured_pixel_size, 2),
-#                 "measured_mm": round(measured_mm, 3),
-#                 "drawing_nominal_mm": round(nominal_mm, 3),
-#                 "delta_mm": round(delta_mm, 3),
-#                 "tolerance_range_mm": [round(min_limit, 3), round(max_limit, 3)],
-#                 "status": feature_status
-#             })
-#         else:
-#             inspection_results.append({
-#                 "tag_id": tag_id,
-#                 "feature_tag": annot.get("tag_name"),
-#                 "normalized_fraction": {"norm_width": norm_w, "norm_height": norm_h},
-#                 "measured_mm": round(measured_mm, 3),
-#                 "drawing_nominal_mm": "N/A",
-#                 "delta_mm": "N/A",
-#                 "status": "UNMATCHED_TAG"
-#             })
-
-#     return {
-#         "status": "completed",
-#         "project_id": project_id,
-#         "overall_result": overall_status,
-#         "conversion_params": {
-#             "scale_mm_per_pixel": scale_mm_per_pixel,
-#             "camera_resolution": f"{camera_width}x{camera_height}"
-#         },
-#         "total_features_inspected": len(inspection_results),
-#         "details": inspection_results
-#     }
 

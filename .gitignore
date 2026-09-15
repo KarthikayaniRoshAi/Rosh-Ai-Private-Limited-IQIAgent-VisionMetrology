@@ -26,6 +26,11 @@ visual_metrology/data/train/*
 visual_metrology/data/output/*
 !visual_metrology/data/output/.gitkeep
 /iqi_storage/
+visual_metrics/calibration/detected
+visual_metrics/calibration/images
+visual_metrics/results/drawing_validation
+visual_metrics/calibration/results/camera_calibrationbackup.json
+visual_metrology/data/temp
 
 # Python packaging
 build/
@@ -50,3 +55,4 @@ Thumbs.db
 # Database (if used)
 *.db
 *.sqlite3
+

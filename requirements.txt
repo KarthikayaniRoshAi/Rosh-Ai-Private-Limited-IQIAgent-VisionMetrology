@@ -4,3 +4,7 @@ openai
 uvicorn
 fastapi
 python-multipart
+numpy
+opencv-python
+requests
+scipy

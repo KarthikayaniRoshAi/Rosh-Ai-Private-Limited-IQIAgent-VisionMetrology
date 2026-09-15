@@ -1,0 +1,44 @@
+{
+    "camera": "LUCID TRI064S-C",
+    "lens": "Tamron M117FM12",
+    "lens_focal_length_mm": 12.0,
+    "image_width": 3072,
+    "image_height": 2048,
+    "pixel_format": "BayerRG8",
+    "checkerboard_inner_corners": [
+        9,
+        7
+    ],
+    "square_size_mm": 22.0,
+    "camera_matrix": [
+        [
+            5107.596185651934,
+            0.0,
+            1520.2948254094847
+        ],
+        [
+            0.0,
+            5124.149511614114,
+            1032.5966481240398
+        ],
+        [
+            0.0,
+            0.0,
+            1.0
+        ]
+    ],
+    "distortion_coefficients": [
+        [
+            -0.18923378090568194,
+            0.6350891478082533,
+            -0.0010697538832052625,
+            -0.0018473321624275603,
+            0.3283647808020633
+        ]
+    ],
+    "fx_pixels": 5107.596185651934,
+    "fy_pixels": 5124.149511614114,
+    "cx_pixels": 1520.2948254094847,
+    "cy_pixels": 1032.5966481240398,
+    "reprojection_error_pixels": 0.9538088615409861
+}
