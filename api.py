@@ -5,7 +5,7 @@ import sys
 import uuid
 import shutil
 import asyncio
-from typing import List, Dict
+from typing import List, Dict, Optional
 from fastapi import FastAPI, Form, UploadFile, File, BackgroundTasks, HTTPException
 from dotenv import load_dotenv
 from fastapi.responses import FileResponse
@@ -29,8 +29,6 @@ app = FastAPI(
     version="0.2"
 )
 
-# In-memory execution database (Stores log buffer, state, and results per execution)
-# For production scaled deployments, replace this with Redis or a DB table.
 EXECUTIONS_DB: Dict[str, Dict] = {}
 
 # Load main framework config at app startup
@@ -296,102 +294,264 @@ async def get_execution_results(execution_id: str):
         "results": results
     }
 
-# @app.post("/api/v1/metrology/inspect")
-# async def verify_inspection(
-#     part_number: str = Form(...),
-#     height: float = Form(None),  # Capture the incoming height from UI/backend
-#     image: UploadFile = File(None),
-#     file: UploadFile = File(None)
-# ):
-#     logger.info(f"Live inspection requested for part_number={part_number} with height={height}")
+def safe_filename(filename: Optional[str]) -> str:
+    """
+    Safely normalize an uploaded filename.
 
-#     # 1. Resolve image file object (handling either 'image' or 'file' key)
-#     uploaded_image = image or file
-#     if not uploaded_image:
-#         raise HTTPException(status_code=400, detail="Image file is required.")
+    Prevents paths such as:
+        ../../malicious.pdf
 
-#     # 2. Save the incoming UI image temporarily to disk so OpenCV can read it via path
-#     try:
-#         base_dir = Path(__file__).resolve().parent
-#         temp_dir = base_dir / "visual_metrology" / "data" / "temp"
-#         temp_dir.mkdir(parents=True, exist_ok=True)
-        
-#         temp_image_path = temp_dir / uploaded_image.filename
-#         with open(temp_image_path, "wb+") as destination:
-#             shutil.copyfileobj(uploaded_image.file, destination)
-            
-#         logger.info(f"Saved temporary inspection frame to: {temp_image_path}")
-#     except Exception as io_err:
-#         raise HTTPException(status_code=500, detail=f"Failed to save temporary image: {str(io_err)}")
+    from escaping the intended upload directory.
+    """
 
-#     # 3. Fallback product height if not provided (defaulting safely or raising an error if mandatory)
-#     product_height = height if height is not None else 0.0
+    if not filename:
+        raise HTTPException(
+            status_code=400,
+            detail="Uploaded file must have a filename.",
+        )
 
-#     # 4. Run the dynamic metrology engine validation from metrics_computation.py
-#     try:
-#         report_data = run_metrology_inspection(
-#             image_path=temp_image_path, 
-#             product_height_mm=product_height
-#         )
-#     except Exception as engine_err:
-#         logger.error(f"Metrology computation engine failed: {str(engine_err)}")
-#         raise HTTPException(status_code=500, detail=f"Inspection processing error: {str(engine_err)}")
+    filename = Path(filename).name
 
-#     # 5. Return the full structured validation report back to the caller
-#     return {
-#         "status": "completed",
-#         "inspection_id": str(uuid.uuid4()),
-#         "part_number": part_number,
-#         "product_height_mm": product_height,
-#         **report_data
-#     }
+    if not filename:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid uploaded filename.",
+        )
+
+    return filename
+
+def is_image(filename: str) -> bool:
+    """Check whether the uploaded file has a supported image extension."""
+
+    supported_extensions = {
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".bmp",
+        ".webp",
+        ".tif",
+        ".tiff",
+    }
+
+    return Path(filename).suffix.lower() in supported_extensions
 
 
-@app.post("/api/v1/metrology/inspect")
+def clean_output_directory(file_paths: List[str]):
+
+    output_base_dir = (
+        BASE_DIR
+        / "visual_metrology"
+        / "data"
+        / "output"
+    )
+
+    output_base_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    for file_path in file_paths:
+
+        base_filename = Path(file_path).stem
+
+        target_out_dir = (
+            output_base_dir
+            / base_filename
+        )
+
+        if not target_out_dir.exists():
+            continue
+
+        if not target_out_dir.is_dir():
+            continue
+
+        try:
+
+            shutil.rmtree(target_out_dir)
+
+            logger.info(
+                "Cleared old output directory for '%s'.",
+                base_filename,
+            )
+
+        except Exception as clean_err:
+
+            logger.warning(
+                "Could not clear old output directory %s: %s",
+                target_out_dir,
+                clean_err,
+            )
+
+
+BASE_DIR = Path(__file__).resolve().parent
+
+@app.post("/api/v1/metrology/inspect",)
 async def verify_inspection(
     part_number: str = Form(...),
-    height: float = Form(None),
+    height: float = Form(None),  
     image: UploadFile = File(None),
     file: UploadFile = File(None)
 ):
-    logger.info(f"Live inspection requested for part_number={part_number} with height={height}")
+
+    logger.info(
+        "Live inspection requested: "
+        "part_number=%s, height=%s",
+        part_number,
+        height,
+    )
 
     uploaded_image = image or file
-    if not uploaded_image:
-        raise HTTPException(status_code=400, detail="Image file is required.")
 
-    try:
-        base_dir = Path(__file__).resolve().parent
-        temp_dir = base_dir / "visual_metrology" / "data" / "temp"
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        
-        temp_image_path = temp_dir / uploaded_image.filename
-        with open(temp_image_path, "wb+") as destination:
-            shutil.copyfileobj(uploaded_image.file, destination)
-    except Exception as io_err:
-        raise HTTPException(status_code=500, detail=f"Failed to save temporary image: {str(io_err)}")
+    if uploaded_image is None:
 
-    product_height = height if height is not None else 0.0
-
-    try:
-        report_data = run_metrology_inspection(
-            image_path=temp_image_path, 
-            product_height_mm=product_height
+        raise HTTPException(
+            status_code=400,
+            detail="Image file is required.",
         )
-    except Exception as engine_err:
-        logger.error(f"Metrology computation engine failed: {str(engine_err)}")
-        raise HTTPException(status_code=500, detail=f"Inspection processing error: {str(engine_err)}")
 
-    # Return standard JSON response payload containing all data cleanly in the body
-    return {
+    filename = safe_filename(
+        uploaded_image.filename
+    )
+
+
+    if not is_image(filename):
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported image format: "
+                f"'{filename}'. "
+                "Supported formats: "
+                "jpg, jpeg, png, bmp, webp, tif, tiff."
+            ),
+        )
+
+    temp_dir = (
+        BASE_DIR
+        / "visual_metrology"
+        / "data"
+        / "temp"
+    )
+
+    temp_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+
+    temp_filename = (
+        f"{uuid.uuid4().hex}_"
+        f"{filename}"
+    )
+
+    temp_image_path = (
+        temp_dir
+        / temp_filename
+    )
+
+    try:
+
+        with temp_image_path.open(
+            "wb"
+        ) as destination:
+
+            shutil.copyfileobj(
+                uploaded_image.file,
+                destination,
+            )
+
+        logger.info(
+            "Saved temporary inspection frame: %s",
+            temp_image_path,
+        )
+
+    except Exception as io_err:
+
+        logger.exception(
+            "Failed to save temporary inspection image."
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Failed to save temporary image: "
+                f"{str(io_err)}"
+            ),
+        )
+
+
+    product_height = (
+        height
+        if height is not None
+        else 0.0
+    )
+
+
+    try:
+
+        report_data = run_metrology_inspection(
+            image_path=temp_image_path,
+            product_height_mm=product_height,
+        )
+
+    except Exception as engine_err:
+
+        logger.exception(
+            "Metrology computation engine failed."
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Inspection processing error: "
+                f"{str(engine_err)}"
+            ),
+        )
+
+    finally:
+
+        try:
+
+            if temp_image_path.exists():
+                temp_image_path.unlink()
+
+                logger.info(
+                    "Deleted temporary inspection image: %s",
+                    temp_image_path,
+                )
+
+        except Exception as cleanup_error:
+
+            logger.warning(
+                "Failed to delete temporary image %s: %s",
+                temp_image_path,
+                cleanup_error,
+            )
+
+
+    response = {
         "status": "completed",
         "inspection_id": str(uuid.uuid4()),
         "part_number": part_number,
-        **report_data
+        "product_height_mm": product_height,
     }
+
+    if isinstance(report_data, dict):
+        report_data.pop("overlay_image_base64", None)
+        response.update(report_data)
+ 
+    return response
+
+    # Add engine-generated report fields.
+    # if isinstance(report_data, dict):
+    #     response.update(report_data)
+
+    # return response
+
 
 if __name__ == "__main__":
     import uvicorn
     # Start ASGI Uvicorn server on port 8001
     uvicorn.run("api:app", host="0.0.0.0", port=8001, reload=True)
+
 
