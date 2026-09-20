@@ -26,11 +26,13 @@ visual_metrology/data/train/*
 visual_metrology/data/output/*
 !visual_metrology/data/output/.gitkeep
 /iqi_storage/
+visual_metrics/drawing_dimensions_new.json
 visual_metrics/calibration/detected
 visual_metrics/calibration/images
 visual_metrics/results/drawing_validation
 visual_metrics/calibration/results/camera_calibrationbackup.json
 visual_metrology/data/temp
+visual_partlayout/*
 
 # Python packaging
 build/

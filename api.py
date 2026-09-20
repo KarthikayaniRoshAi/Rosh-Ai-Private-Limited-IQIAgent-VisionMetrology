@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from fastapi.responses import FileResponse
 import yaml
 from pathlib import Path
-
+from orientation_test.orientation_align.aligner import OrientationAligner
 from visual_metrics.metrics_computation import run_metrology_inspection
 load_dotenv()
 from common.config_loader import ConfigLoader
@@ -30,6 +30,8 @@ app = FastAPI(
 )
 
 EXECUTIONS_DB: Dict[str, Dict] = {}
+INSPECTIONS_DB: Dict[str, Dict] = {}
+BASE_DIR = Path(__file__).resolve().parent
 
 # Load main framework config at app startup
 main_config = ConfigLoader("configs/main_config.yaml").get()
@@ -294,6 +296,208 @@ async def get_execution_results(execution_id: str):
         "results": results
     }
 
+
+@app.post("/api/v1/metrology/save-plc")
+async def save_position_layout(
+    project_id: str = Form(...),
+    views: Optional[str] = Form(None),
+    view_name: Optional[str] = Form(None),
+    image: Optional[UploadFile] = File(None),
+    file: Optional[UploadFile] = File(None),
+    annotations: str = Form(...)  # Passed as JSON string from frontend
+):
+
+    logger.info("========== SAVE POSITION CAPTURE (FASTAPI) ==========")
+    
+    # Normalize view parameter name
+    target_view_name = views or view_name
+    uploaded_image = image or file
+
+    # --- 1. VALIDATION ---
+    if not project_id:
+        raise HTTPException(status_code=400, detail="project_id is required")
+    if not target_view_name:
+        raise HTTPException(status_code=400, detail="views is required")
+    if not uploaded_image:
+        raise HTTPException(status_code=400, detail="image is required")
+    if not annotations:
+        raise HTTPException(status_code=400, detail="annotations is required")
+
+    try:
+        # --- 2. PARSE ANNOTATIONS JSON ---
+        if isinstance(annotations, str):
+            annotations_data = json.loads(annotations)
+        else:
+            annotations_data = annotations
+
+        part_number = annotations_data.get('part_number', 'Unknown Part')
+        drawing_id = annotations_data.get('drawingId', '')
+
+        logger.info(f"project_id={project_id}")
+        logger.info(f"view_name={target_view_name}")
+        logger.info(f"part_number={part_number}")
+        logger.info(f"image={uploaded_image.filename}")
+
+        # --- 3. SAVE FILE TO DISK ---
+        base_dir = Path(__file__).resolve().parent
+        output_dir = base_dir / "visual_metrology" / "data" / "output" / str(project_id) / "part_layout"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        filename = uploaded_image.filename
+        if not filename.startswith("part_layout_"):
+            filename = f"part_layout_{filename}"
+            
+        saved_file_path = output_dir / filename
+
+        with open(saved_file_path, "wb+") as destination:
+            shutil.copyfileobj(uploaded_image.file, destination)
+
+        logger.info(f"Layout image saved to: {saved_file_path}")
+
+        # --- 4. OPTIONAL: SAVE METADATA RECORD LOCALLY (JSON) ---
+        record_id = str(uuid.uuid4())
+        record_data = {
+            "id": record_id,
+            "project_id": project_id,
+            "view_name": target_view_name,
+            "part_number": part_number,
+            "drawing_id": drawing_id,
+            "image_path": str(saved_file_path),
+            "annotations_data": annotations_data
+        }
+        
+        record_file_path = output_dir / f"{record_id}_meta.json"
+        with open(record_file_path, "w", encoding="utf-8") as f:
+            json.dump(record_data, f, indent=4)
+
+        # --- 5. RETURN SUCCESS RESPONSE ---
+        return {
+            "id": record_id,
+            "status": "success",
+            "message": "Position capture layout saved successfully.",
+            "project_id": project_id,
+            "view_name": target_view_name,
+            "part_number": part_number,
+            "filename": filename,
+            "saved_path": str(saved_file_path),
+            "annotations_data": annotations_data
+        }
+
+    except json.JSONDecodeError as json_err:
+        logger.exception(f"Invalid annotations JSON: {json_err}")
+        raise HTTPException(
+            status_code=400, 
+            detail={"error": "Invalid annotations JSON", "details": str(json_err)}
+        )
+    except Exception as e:
+        logger.exception(f"Failed to save position capture: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail={"error": "Failed to save position capture", "details": str(e)}
+        )
+
+@app.get("/api/v1/metrology/captures")
+async def list_position_captures():
+    """
+    Scans the visual_metrology/data/output directories and returns 
+    all saved position capture records.
+    """
+    try:
+        base_dir = Path(__file__).resolve().parent
+        output_base_dir = base_dir / "visual_metrology" / "data" / "output"
+        
+        if not output_base_dir.exists():
+            return []
+
+        captures = []
+        # Search through all project folders and meta.json files
+        for meta_file in output_base_dir.glob("**/ *_meta.json"):
+            try:
+                with open(meta_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    captures.append(data)
+            except Exception as read_err:
+                logger.warning(f"Could not read meta file {meta_file}: {read_err}")
+
+        # Sort by creation or file system modification time (newest first)
+        captures.sort(key=lambda x: str(x.get("id", "")), reverse=True)
+
+        return {
+            "status": "success",
+            "count": len(captures),
+            "results": captures
+        }
+
+    except Exception as e:
+        logger.exception(f"Failed to list position captures: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "Failed to list position captures", "details": str(e)}
+        )
+
+@app.delete("/api/v1/metrology/captures/{record_id}")
+async def delete_position_capture(record_id: str):
+    """
+    Deletes a specific position capture record, its metadata file, 
+    and its saved layout image from disk.
+    """
+    try:
+        base_dir = Path(__file__).resolve().parent
+        output_base_dir = base_dir / "visual_metrology" / "data" / "output"
+        
+        if not output_base_dir.exists():
+            raise HTTPException(status_code=404, detail="Capture directory not found.")
+
+        target_meta_file = None
+        target_project_dir = None
+
+        # Locate the metadata file matching the record_id
+        for meta_file in output_base_dir.glob(f"**/{record_id}_meta.json"):
+            target_meta_file = meta_file
+            target_project_dir = meta_file.parent
+            break
+
+        if not target_meta_file or not target_meta_file.exists():
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Position capture with ID '{record_id}' not found."
+            )
+
+        # Read meta file to locate the image path if needed
+        with open(target_meta_file, "r", encoding="utf-8") as f:
+            meta_data = json.load(f)
+            image_path = meta_data.get("image_path")
+
+        # Delete the image file if it exists
+        if image_path and Path(image_path).exists():
+            Path(image_path).unlink()
+            logger.info(f"Deleted layout image: {image_path}")
+
+        # Delete the metadata JSON file
+        target_meta_file.unlink()
+        logger.info(f"Deleted metadata file: {target_meta_file}")
+
+        # Optional: Clean up project folder if it is completely empty now
+        if target_project_dir and target_project_dir.exists():
+            if not any(target_project_dir.iterdir()):
+                shutil.rmtree(target_project_dir)
+                logger.info(f"Removed empty project output directory: {target_project_dir}")
+
+        return {
+            "status": "success",
+            "message": f"Position capture '{record_id}' deleted successfully."
+        }
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.exception(f"Failed to delete position capture {record_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "Failed to delete position capture", "details": str(e)}
+        )
+
+
 def safe_filename(filename: Optional[str]) -> str:
     """
     Safely normalize an uploaded filename.
@@ -383,171 +587,852 @@ def clean_output_directory(file_paths: List[str]):
             )
 
 
-BASE_DIR = Path(__file__).resolve().parent
+def get_part_data_from_db(part_number: str) -> Optional[Dict]:
 
-@app.post("/api/v1/metrology/inspect",)
-async def verify_inspection(
-    part_number: str = Form(...),
-    height: float = Form(None),  
-    image: UploadFile = File(None),
-    file: UploadFile = File(None)
+    try:
+        print(f"Fetching ground truth configuration for part: {part_number}...")
+        
+        # Point directly to the folder where Django saves the ground truth files
+        base_ground_truth_dir = Path(r"C:\Users\karth\Downloads\main_folder\rsm\Visual Metrology\visual_partlayout\ground_truth")
+        part_dir = base_ground_truth_dir / str(part_number)
+        
+        if not part_dir.exists():
+            print(f"Ground truth directory for part {part_number} does not exist at {part_dir}")
+            return None
+        
+        # Find the image file inside the part folder
+        image_files = list(part_dir.glob("*.jpg")) + list(part_dir.glob("*.png")) + list(part_dir.glob("*.jpeg"))
+        
+        if not image_files:
+            print(f"No ground truth image found inside {part_dir}")
+            return None
+            
+        reference_image_path = image_files[0]
+        
+        # Automatically find any JSON file in the folder (handles metadata.json, part_number.json, etc.)
+        drawing_config = {}
+        json_files = list(part_dir.glob("*.json"))
+        if json_files:
+            json_path = json_files[0]  # Take the first JSON file found
+            with open(json_path, "r", encoding="utf-8") as f:
+                drawing_config = json.load(f)
+
+        return {
+            "reference_image_path": str(reference_image_path),
+            "drawing_config": drawing_config
+        }
+
+    except Exception as e:
+        print(f"Error fetching part data for {part_number}: {e}")
+        raise
+def run_orientation_alignment(
+    inspection_image_path,
+    ground_truth_image_path,
+    ground_truth_json,
+    part_number
 ):
 
     logger.info(
-        "Live inspection requested: "
-        "part_number=%s, height=%s",
-        part_number,
-        height,
+        "Orientation processing for part: %s",
+        part_number
     )
 
-    uploaded_image = image or file
+    logger.info(
+        "Inspection image: %s",
+        inspection_image_path
+    )
 
-    if uploaded_image is None:
+    logger.info(
+        "Ground truth image: %s",
+        ground_truth_image_path
+    )
 
-        raise HTTPException(
-            status_code=400,
-            detail="Image file is required.",
+    logger.info(
+        "Ground truth JSON received: %s",
+        bool(ground_truth_json)
+    )
+
+    # ---------------------------------------------------------
+    # Load images
+    # ---------------------------------------------------------
+
+    ground_truth_image = cv2.imread(
+        str(ground_truth_image_path),
+        cv2.IMREAD_COLOR
+    )
+
+    inspection_image = cv2.imread(
+        str(inspection_image_path),
+        cv2.IMREAD_COLOR
+    )
+
+    if ground_truth_image is None:
+
+        raise RuntimeError(
+            "Unable to load ground truth image"
         )
 
-    filename = safe_filename(
-        uploaded_image.filename
-    )
+    if inspection_image is None:
 
-
-    if not is_image(filename):
-
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Unsupported image format: "
-                f"'{filename}'. "
-                "Supported formats: "
-                "jpg, jpeg, png, bmp, webp, tif, tiff."
-            ),
+        raise RuntimeError(
+            "Unable to load inspection image"
         )
 
-    temp_dir = (
-        BASE_DIR
-        / "visual_metrology"
-        / "data"
-        / "temp"
+    # ---------------------------------------------------------
+    # Orientation aligner
+    # ---------------------------------------------------------
+
+    aligner = OrientationAligner()
+
+    result = aligner.align(
+        ground_truth_image,
+        inspection_image
     )
 
-    temp_dir.mkdir(
+    # ---------------------------------------------------------
+    # Save aligned image
+    # ---------------------------------------------------------
+
+    output_dir = (
+        inspection_image_path.parent
+        / "orientation"
+    )
+
+    output_dir.mkdir(
         parents=True,
-        exist_ok=True,
+        exist_ok=True
     )
 
-
-    temp_filename = (
-        f"{uuid.uuid4().hex}_"
-        f"{filename}"
+    aligned_path = (
+        output_dir
+        / f"{inspection_image_path.stem}_aligned.jpg"
     )
 
-    temp_image_path = (
-        temp_dir
-        / temp_filename
-    )
+    if result.success:
+
+        cv2.imwrite(
+            str(aligned_path),
+            result.aligned_image
+        )
+
+    # ---------------------------------------------------------
+    # Return
+    # ---------------------------------------------------------
+
+    return {
+
+        "orientation_status": (
+            "success"
+            if result.success
+            else "failed"
+        ),
+
+        "rotation_degrees": float(
+            result.rotation_degrees
+        ),
+
+        "scale": float(
+            result.scale
+        ),
+
+        "confidence": float(
+            result.confidence
+        ),
+
+        "message": result.message,
+
+        "aligned_image_path": (
+            str(aligned_path)
+            if result.success
+            else None
+        )
+    }
+
+
+def save_temp_inspection_image(inspection_id: str, uploaded_image: UploadFile) -> Path:
+    """Saves the incoming inspection image to a temporary working directory."""
+    base_dir = Path(__file__).resolve().parent
+    temp_dir = base_dir / "visual_metrology" / "data" / "output" / "temp_inspections"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    
+    saved_path = temp_dir / f"{inspection_id}_{uploaded_image.filename}"
+    with open(saved_path, "wb") as buffer:
+        shutil.copyfileobj(uploaded_image.file, buffer)
+        
+    return saved_path
+
+def run_heavy_inspection_task(inspection_id: str, part_number: str, height: float, saved_image_path: Path):
+    """Background task with live stdout redirection to UI log buffer for inspection."""
+    INSPECTIONS_DB[inspection_id]["status"] = "processing"
+    
+    original_stdout = sys.stdout
+    sys.stdout = ExecutionLogger(inspection_id, original_stdout) # Reusing your ExecutionLogger class
 
     try:
+        print(f"Starting inspection process for part: {part_number}...")
+        
+        # 1. Fetch DB ground truth
+        print("Fetching ground truth configuration from database...")
+        part_data = get_part_data_from_db(part_number)
+        if not part_data:
+            raise ValueError(f"No ground truth data found for part '{part_number}'")
+            
+        ground_truth_json = part_data["drawing_config"]
+        ground_truth_image_path = Path(part_data["reference_image_path"])
 
-        with temp_image_path.open(
-            "wb"
-        ) as destination:
-
-            shutil.copyfileobj(
-                uploaded_image.file,
-                destination,
-            )
-
-        logger.info(
-            "Saved temporary inspection frame: %s",
-            temp_image_path,
+        # 2. Run Orientation Alignment
+        print("Running orientation alignment...")
+        orientation_result = run_orientation_alignment(
+            inspection_image_path=saved_image_path,
+            ground_truth_image_path=ground_truth_image_path,
+            ground_truth_json=ground_truth_json,
+            part_number=part_number,
         )
 
-    except Exception as io_err:
+        if orientation_result["orientation_status"] != "success":
+            raise RuntimeError("Could not determine part orientation.")
 
-        logger.exception(
-            "Failed to save temporary inspection image."
-        )
+        # 3. Run Metric Computation with Dynamic Paths
+        print("Running metrology metric computation...")
+        product_height = height if height is not None else 0.0
+        
+        # Define dynamic paths
+        target_metrics_path = Path(r"C:\Users\karth\Downloads\main_folder\rsm\Visual Metrology\visual_metrics\drawing_dimensions_new.json")
+        aligned_image_path = Path(orientation_result["aligned_image_path"])
+        
+        # Ensure the part's JSON is copied fresh to the metrics path first (as we set up earlier)
+        part_dir = Path(r"C:\Users\karth\Downloads\main_folder\rsm\Visual Metrology\visual_partlayout\ground_truth") / str(part_number)
+        json_files = list(part_dir.glob("*.json"))
+        if json_files:
+            import json
+            import shutil
+            
+            with open(json_files[0], "r", encoding="utf-8") as f:
+                raw_data = json.load(f)
+            
+            metrics_data = raw_data["annotations_data"] if "annotations_data" in raw_data else raw_data
+            
+            with open(target_metrics_path, "w", encoding="utf-8") as f:
+                json.dump(metrics_data, f, indent=4)
+        else:
+            raise FileNotFoundError(f"No JSON configuration found in {part_dir}")
 
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Failed to save temporary image: "
-                f"{str(io_err)}"
-            ),
-        )
-
-
-    product_height = (
-        height
-        if height is not None
-        else 0.0
-    )
-
-
-    try:
-
+        # Call run_metrology_inspection passing the dynamic variables
         report_data = run_metrology_inspection(
-            image_path=temp_image_path,
+            image_path=aligned_image_path,
+            json_path=target_metrics_path,
             product_height_mm=product_height,
         )
 
-    except Exception as engine_err:
+        if isinstance(report_data, dict):
+            report_data.pop("overlay_image_base64", None)
 
-        logger.exception(
-            "Metrology computation engine failed."
-        )
+        # 4. Finalize
+        INSPECTIONS_DB[inspection_id]["status"] = "completed"
+        INSPECTIONS_DB[inspection_id]["results"] = {
+            "part_number": part_number,
+            "orientation": orientation_result,
+            **(report_data or {})
+        }
+        print("✓ Inspection completed successfully.")
 
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Inspection processing error: "
-                f"{str(engine_err)}"
-            ),
-        )
+    except Exception as e:
+        INSPECTIONS_DB[inspection_id]["status"] = "failed"
+        INSPECTIONS_DB[inspection_id]["error"] = str(e)
+        print(f"Inspection failed: {str(e)}")
+        logger.error(f"Inspection {inspection_id} failed: {str(e)}")
 
     finally:
+        sys.stdout = original_stdout
 
+@app.post("/api/v1/metrology/inspect")
+async def verify_inspection(
+    background_tasks: BackgroundTasks,
+    part_number: str = Form(...),
+    height: float = Form(None),
+    image: UploadFile = File(None),
+    file: UploadFile = File(None)
+):
+    uploaded_image = image or file
+    if not uploaded_image:
+        raise HTTPException(status_code=400, detail="Image file is required.")
+
+    # A. Flush/Delete old drawing_dimensions_new.json so it doesn't bleed over
+    target_metrics_path = Path(r"C:\Users\karth\Downloads\main_folder\rsm\Visual Metrology\visual_metrics\drawing_dimensions_new.json")
+    if target_metrics_path.exists():
         try:
+            target_metrics_path.unlink()
+        except Exception as e:
+            print(f"Warning: Could not remove old metrics JSON: {e}")
 
-            if temp_image_path.exists():
-                temp_image_path.unlink()
+    # B. Flush out the temp inspection folder (delete all old temp images)
+    temp_dir = Path(r"C:\Users\karth\Downloads\main_folder\rsm\Visual Metrology\visual_metrology\data\output\temp_inspections")
+    if temp_dir.exists():
+        try:
+            for temp_file in temp_dir.glob("*.*"):
+                try:
+                    temp_file.unlink()
+                except Exception as file_err:
+                    print(f"Could not delete temp file {temp_file.name}: {file_err}")
+        except Exception as dir_err:
+            print(f"Warning: Could not clear temp inspections directory: {dir_err}")
 
-                logger.info(
-                    "Deleted temporary inspection image: %s",
-                    temp_image_path,
-                )
+    inspection_id = str(uuid.uuid4())
+    
+    # 1. Save uploaded inspection image temporarily
+    saved_image_path = save_temp_inspection_image(inspection_id, uploaded_image)
 
-        except Exception as cleanup_error:
-
-            logger.warning(
-                "Failed to delete temporary image %s: %s",
-                temp_image_path,
-                cleanup_error,
-            )
-
-
-    response = {
-        "status": "completed",
-        "inspection_id": str(uuid.uuid4()),
+    # 2. Initialize tracking record
+    INSPECTIONS_DB[inspection_id] = {
+        "status": "processing",
         "part_number": part_number,
-        "product_height_mm": product_height,
+        "results": None,
+        "error": None
     }
 
-    if isinstance(report_data, dict):
-        report_data.pop("overlay_image_base64", None)
-        response.update(report_data)
+    # 3. Offload heavy CV pipeline to background thread
+    background_tasks.add_task(
+        run_heavy_inspection_task, 
+        inspection_id, 
+        part_number, 
+        height, 
+        saved_image_path
+    )
+
+    # 4. Return instant response so UI never hangs
+    return {
+        "status": "queued",
+        "inspection_id": inspection_id,
+        "message": "Inspection started in background. Poll results endpoint."
+    }
+
+
+
+
+# @app.post("/api/v1/metrology/inspect")
+# async def verify_inspection(
+#     part_number: str = Form(...),
+#     height: float = Form(None),
+#     image: UploadFile = File(None),
+#     file: UploadFile = File(None)
+# ):
+
+#     logger.info(
+#         "Inspection requested: part_number=%s",
+#         part_number
+#     )
+
+#     # =========================================================
+#     # 1. RECEIVE INSPECTION IMAGE
+#     # =========================================================
+
+#     uploaded_image = image or file
+
+#     if uploaded_image is None:
+#         raise HTTPException(
+#             status_code=400,
+#             detail="Image file is required."
+#         )
+
+#     filename = safe_filename(
+#         uploaded_image.filename
+#     )
+
+#     if not is_image(filename):
+#         raise HTTPException(
+#             status_code=400,
+#             detail=f"Unsupported image format: {filename}"
+#         )
+
+#     # =========================================================
+#     # 2. FETCH GROUND TRUTH FROM DB USING PART NUMBER
+#     # =========================================================
+
+#     try:
+
+#         part_data = get_part_data_from_db(
+#             part_number
+#         )
+
+#     except Exception as db_err:
+
+#         logger.exception(
+#             "Failed to fetch part data from DB."
+#         )
+
+#         raise HTTPException(
+#             status_code=500,
+#             detail=f"Database error: {str(db_err)}"
+#         )
+
+#     if not part_data:
+
+#         raise HTTPException(
+#             status_code=404,
+#             detail=(
+#                 f"No ground truth data found "
+#                 f"for part_number '{part_number}'"
+#             )
+#         )
+
+#     # =========================================================
+#     # 3. EXTRACT GROUND TRUTH
+#     # =========================================================
+
+#     ground_truth_json = (
+#         part_data["drawing_config"]
+#     )
+
+#     ground_truth_image_path = (
+#         Path(
+#             part_data["reference_image_path"]
+#         )
+#     )
+
+#     logger.info(
+#         "Ground truth loaded for part: %s",
+#         part_number
+#     )
+
+#     logger.info(
+#         "Ground truth image: %s",
+#         ground_truth_image_path
+#     )
+
+#     logger.info(
+#         "Ground truth drawing data loaded"
+#     )
+
+#     # =========================================================
+#     # 4. SAVE CURRENT INSPECTION IMAGE
+#     # =========================================================
+
+#     part_output_dir = (
+#         BASE_DIR
+#         / "visual_metrology"
+#         / "data"
+#         / "output"
+#         / part_number
+#     )
+
+#     part_output_dir.mkdir(
+#         parents=True,
+#         exist_ok=True
+#     )
+
+#     saved_image_path = (
+#         part_output_dir / filename
+#     )
+
+#     try:
+
+#         with saved_image_path.open("wb") as destination:
+
+#             shutil.copyfileobj(
+#                 uploaded_image.file,
+#                 destination
+#             )
+
+#         logger.info(
+#             "Inspection image saved: %s",
+#             saved_image_path
+#         )
+
+#     except Exception as io_err:
+
+#         logger.exception(
+#             "Failed to save inspection image."
+#         )
+
+#         raise HTTPException(
+#             status_code=500,
+#             detail=f"Failed to save image: {str(io_err)}"
+#         )
+
+#     # =========================================================
+#     # 5. ORIENTATION
+#     # =========================================================
+
+#     logger.info("")
+#     logger.info("=" * 70)
+#     logger.info("STARTING ORIENTATION")
+#     logger.info("=" * 70)
+
+#     try:
+
+#         orientation_result = run_orientation_alignment(
+#             inspection_image_path=saved_image_path,
+#             ground_truth_image_path=ground_truth_image_path,
+#             ground_truth_json=ground_truth_json,
+#             part_number=part_number,
+#         )
+
+#     except Exception as orientation_err:
+
+#         logger.exception(
+#             "Orientation processing failed."
+#         )
+
+#         raise HTTPException(
+#             status_code=500,
+#             detail=(
+#                 f"Orientation processing error: "
+#                 f"{str(orientation_err)}"
+#             )
+#         )
+
+#     # =========================================================
+#     # 6. LOG ORIENTATION RESULT
+#     # =========================================================
+
+#     logger.info("=" * 70)
+#     logger.info("ORIENTATION RESULT")
+#     logger.info("=" * 70)
+
+#     logger.info(
+#         "Status     : %s",
+#         orientation_result["orientation_status"]
+#     )
+
+#     logger.info(
+#         "Rotation   : %.4f degrees",
+#         orientation_result["rotation_degrees"]
+#     )
+
+#     logger.info(
+#         "Scale      : %.6f",
+#         orientation_result["scale"]
+#     )
+
+#     logger.info(
+#         "Confidence : %.4f",
+#         orientation_result["confidence"]
+#     )
+
+#     logger.info(
+#         "Aligned    : %s",
+#         orientation_result["aligned_image_path"]
+#     )
+
+#     logger.info("=" * 70)
+
+#     # =========================================================
+#     # 7. CHECK ORIENTATION
+#     # =========================================================
+
+#     if (
+#         orientation_result["orientation_status"]
+#         != "success"
+#     ):
+
+#         raise HTTPException(
+#             status_code=422,
+#             detail={
+#                 "message": "Could not determine part orientation",
+#                 "orientation": orientation_result
+#             }
+#         )
+
+#     # =========================================================
+#     # 8. GET ALIGNED IMAGE
+#     # =========================================================
+
+#     aligned_image_path = Path(
+#         orientation_result[
+#             "aligned_image_path"
+#         ]
+#     )
+
+#     # =========================================================
+#     # 9. WRITE DB DRAWING DATA FOR METRICS ENGINE
+#     # =========================================================
+
+#     target_json_path = (
+#         BASE_DIR
+#         / "visual_metrics"
+#         / "drawing_dimensions_new.json"
+#     )
+
+#     try:
+
+#         target_json_path.parent.mkdir(
+#             parents=True,
+#             exist_ok=True
+#         )
+
+#         with open(
+#             target_json_path,
+#             "w",
+#             encoding="utf-8"
+#         ) as f:
+
+#             json.dump(
+#                 ground_truth_json,
+#                 f,
+#                 indent=4
+#             )
+
+#         logger.info(
+#             "Ground truth drawing JSON "
+#             "passed to metrics engine."
+#         )
+
+#     except Exception as json_err:
+
+#         logger.exception(
+#             "Failed to write drawing configuration."
+#         )
+
+#         raise HTTPException(
+#             status_code=500,
+#             detail=(
+#                 f"Failed to prepare metric data: "
+#                 f"{str(json_err)}"
+#             )
+#         )
+
+#     # =========================================================
+#     # 10. METRIC COMPUTATION
+#     # =========================================================
+
+#     logger.info("")
+#     logger.info("=" * 70)
+#     logger.info("STARTING METRIC COMPUTATION")
+#     logger.info("=" * 70)
+
+#     product_height = (
+#         height if height is not None else 0.0
+#     )
+
+#     try:
+
+#         report_data = run_metrology_inspection(
+#             image_path=aligned_image_path,
+#             product_height_mm=product_height,
+#         )
+
+#     except Exception as engine_err:
+
+#         logger.exception(
+#             "Metrology computation failed."
+#         )
+
+#         raise HTTPException(
+#             status_code=500,
+#             detail=(
+#                 f"Metric computation error: "
+#                 f"{str(engine_err)}"
+#             )
+#         )
+
+#     logger.info(
+#         "Metric computation completed."
+#     )
+
+#     # =========================================================
+#     # 11. FINAL RESPONSE
+#     # =========================================================
+
+#     response = {
+
+#         "status": "completed",
+
+#         "inspection_id": str(
+#             uuid.uuid4()
+#         ),
+
+#         "part_number": part_number,
+
+#         "product_height_mm": product_height,
+
+#         "input_image_path": str(
+#             saved_image_path
+#         ),
+
+#         "ground_truth_image_path": str(
+#             ground_truth_image_path
+#         ),
+
+#         "orientation": orientation_result
+#     }
+
+#     if isinstance(report_data, dict):
+
+#         report_data.pop(
+#             "overlay_image_base64",
+#             None
+#         )
+
+#         response.update(
+#             report_data
+#         )
+
+#     return response
+
+# BASE_DIR = Path(__file__).resolve().parent
+
+# @app.post("/api/v1/metrology/inspect",)
+# async def verify_inspection(
+#     part_number: str = Form(...),
+#     height: float = Form(None),  
+#     image: UploadFile = File(None),
+#     file: UploadFile = File(None)
+# ):
+
+#     logger.info(
+#         "Live inspection requested: "
+#         "part_number=%s, height=%s",
+#         part_number,
+#         height,
+#     )
+
+#     uploaded_image = image or file
+
+#     if uploaded_image is None:
+
+#         raise HTTPException(
+#             status_code=400,
+#             detail="Image file is required.",
+#         )
+
+#     filename = safe_filename(
+#         uploaded_image.filename
+#     )
+
+
+#     if not is_image(filename):
+
+#         raise HTTPException(
+#             status_code=400,
+#             detail=(
+#                 f"Unsupported image format: "
+#                 f"'{filename}'. "
+#                 "Supported formats: "
+#                 "jpg, jpeg, png, bmp, webp, tif, tiff."
+#             ),
+#         )
+
+#     temp_dir = (
+#         BASE_DIR
+#         / "visual_metrology"
+#         / "data"
+#         / "temp"
+#     )
+
+#     temp_dir.mkdir(
+#         parents=True,
+#         exist_ok=True,
+#     )
+
+
+#     temp_filename = (
+#         f"{uuid.uuid4().hex}_"
+#         f"{filename}"
+#     )
+
+#     temp_image_path = (
+#         temp_dir
+#         / temp_filename
+#     )
+
+#     try:
+
+#         with temp_image_path.open(
+#             "wb"
+#         ) as destination:
+
+#             shutil.copyfileobj(
+#                 uploaded_image.file,
+#                 destination,
+#             )
+
+#         logger.info(
+#             "Saved temporary inspection frame: %s",
+#             temp_image_path,
+#         )
+
+#     except Exception as io_err:
+
+#         logger.exception(
+#             "Failed to save temporary inspection image."
+#         )
+
+#         raise HTTPException(
+#             status_code=500,
+#             detail=(
+#                 "Failed to save temporary image: "
+#                 f"{str(io_err)}"
+#             ),
+#         )
+
+
+#     product_height = (
+#         height
+#         if height is not None
+#         else 0.0
+#     )
+
+
+#     try:
+
+#         report_data = run_metrology_inspection(
+#             image_path=temp_image_path,
+#             product_height_mm=product_height,
+#         )
+
+#     except Exception as engine_err:
+
+#         logger.exception(
+#             "Metrology computation engine failed."
+#         )
+
+#         raise HTTPException(
+#             status_code=500,
+#             detail=(
+#                 "Inspection processing error: "
+#                 f"{str(engine_err)}"
+#             ),
+#         )
+
+#     finally:
+
+#         try:
+
+#             if temp_image_path.exists():
+#                 temp_image_path.unlink()
+
+#                 logger.info(
+#                     "Deleted temporary inspection image: %s",
+#                     temp_image_path,
+#                 )
+
+#         except Exception as cleanup_error:
+
+#             logger.warning(
+#                 "Failed to delete temporary image %s: %s",
+#                 temp_image_path,
+#                 cleanup_error,
+#             )
+
+
+#     response = {
+#         "status": "completed",
+#         "inspection_id": str(uuid.uuid4()),
+#         "part_number": part_number,
+#         "product_height_mm": product_height,
+#     }
+
+#     if isinstance(report_data, dict):
+#         report_data.pop("overlay_image_base64", None)
+#         response.update(report_data)
  
-    return response
+#     return response
 
     # Add engine-generated report fields.
     # if isinstance(report_data, dict):
     #     response.update(report_data)
 
     # return response
-
 
 if __name__ == "__main__":
     import uvicorn
