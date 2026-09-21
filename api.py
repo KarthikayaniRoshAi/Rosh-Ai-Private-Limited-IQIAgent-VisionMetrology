@@ -625,6 +625,8 @@ def get_part_data_from_db(part_number: str) -> Optional[Dict]:
     except Exception as e:
         print(f"Error fetching part data for {part_number}: {e}")
         raise
+
+
 def run_orientation_alignment(
     inspection_image_path,
     ground_truth_image_path,
@@ -761,18 +763,47 @@ def save_temp_inspection_image(inspection_id: str, uploaded_image: UploadFile) -
         
     return saved_path
 
+
+import sys
+import io
+import uuid
+from pathlib import Path
+from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, HTTPException
+
+# In-memory storage for tracking inspection execution, logs, and results
+INSPECTIONS_DB = {}
+
+class InspectionLogger(io.StringIO):
+    """Intercepts print statements to store logs in real-time for UI polling."""
+    def __init__(self, inspection_id, original_stdout):
+        super().__init__()
+        self.inspection_id = inspection_id
+        self.original_stdout = original_stdout
+
+    def write(self, buf):
+        self.original_stdout.write(buf)
+        msg = buf.strip()
+        if not msg or self.inspection_id not in INSPECTIONS_DB:
+            return
+        INSPECTIONS_DB[self.inspection_id]["logs"].append(msg)
+
+    def flush(self):
+        self.original_stdout.flush()
+
+
 def run_heavy_inspection_task(inspection_id: str, part_number: str, height: float, saved_image_path: Path):
     """Background task with live stdout redirection to UI log buffer for inspection."""
     INSPECTIONS_DB[inspection_id]["status"] = "processing"
     
     original_stdout = sys.stdout
-    sys.stdout = ExecutionLogger(inspection_id, original_stdout) # Reusing your ExecutionLogger class
+    sys.stdout = InspectionLogger(inspection_id, original_stdout)
 
     try:
         print(f"Starting inspection process for part: {part_number}...")
         
-        # 1. Fetch DB ground truth
+        # 1. Fetch DB ground truth (or adapt to your application's lookup mechanism)
         print("Fetching ground truth configuration from database...")
+        # Note: Ensure get_part_data_from_db is imported or defined in your module
         part_data = get_part_data_from_db(part_number)
         if not part_data:
             raise ValueError(f"No ground truth data found for part '{part_number}'")
@@ -796,11 +827,9 @@ def run_heavy_inspection_task(inspection_id: str, part_number: str, height: floa
         print("Running metrology metric computation...")
         product_height = height if height is not None else 0.0
         
-        # Define dynamic paths
         target_metrics_path = Path(r"C:\Users\karth\Downloads\main_folder\rsm\Visual Metrology\visual_metrics\drawing_dimensions_new.json")
         aligned_image_path = Path(orientation_result["aligned_image_path"])
         
-        # Ensure the part's JSON is copied fresh to the metrics path first (as we set up earlier)
         part_dir = Path(r"C:\Users\karth\Downloads\main_folder\rsm\Visual Metrology\visual_partlayout\ground_truth") / str(part_number)
         json_files = list(part_dir.glob("*.json"))
         if json_files:
@@ -817,7 +846,7 @@ def run_heavy_inspection_task(inspection_id: str, part_number: str, height: floa
         else:
             raise FileNotFoundError(f"No JSON configuration found in {part_dir}")
 
-        # Call run_metrology_inspection passing the dynamic variables
+        # Call your core inspection engine function
         report_data = run_metrology_inspection(
             image_path=aligned_image_path,
             json_path=target_metrics_path,
@@ -829,24 +858,31 @@ def run_heavy_inspection_task(inspection_id: str, part_number: str, height: floa
 
         # 4. Finalize
         INSPECTIONS_DB[inspection_id]["status"] = "completed"
-        INSPECTIONS_DB[inspection_id]["results"] = {
-            "part_number": part_number,
-            "orientation": orientation_result,
-            **(report_data or {})
-        }
+
+        final_results = {
+                "part_number": part_number,
+                "orientation": orientation_result,
+                **(report_data or {})
+            }
+            
+        final_results.pop("overlay_image_path", None)
+        final_results.pop("annotated_boxes_path", None)
+        final_results.pop("annotated_boxes_base64", None)
+
+        INSPECTIONS_DB[inspection_id]["results"] = final_results
         print("✓ Inspection completed successfully.")
 
     except Exception as e:
         INSPECTIONS_DB[inspection_id]["status"] = "failed"
         INSPECTIONS_DB[inspection_id]["error"] = str(e)
         print(f"Inspection failed: {str(e)}")
-        logger.error(f"Inspection {inspection_id} failed: {str(e)}")
 
     finally:
         sys.stdout = original_stdout
 
+
 @app.post("/api/v1/metrology/inspect")
-async def verify_inspection(
+async def verify_inspection_endpoint(
     background_tasks: BackgroundTasks,
     part_number: str = Form(...),
     height: float = Form(None),
@@ -857,40 +893,21 @@ async def verify_inspection(
     if not uploaded_image:
         raise HTTPException(status_code=400, detail="Image file is required.")
 
-    # A. Flush/Delete old drawing_dimensions_new.json so it doesn't bleed over
-    target_metrics_path = Path(r"C:\Users\karth\Downloads\main_folder\rsm\Visual Metrology\visual_metrics\drawing_dimensions_new.json")
-    if target_metrics_path.exists():
-        try:
-            target_metrics_path.unlink()
-        except Exception as e:
-            print(f"Warning: Could not remove old metrics JSON: {e}")
-
-    # B. Flush out the temp inspection folder (delete all old temp images)
-    temp_dir = Path(r"C:\Users\karth\Downloads\main_folder\rsm\Visual Metrology\visual_metrology\data\output\temp_inspections")
-    if temp_dir.exists():
-        try:
-            for temp_file in temp_dir.glob("*.*"):
-                try:
-                    temp_file.unlink()
-                except Exception as file_err:
-                    print(f"Could not delete temp file {temp_file.name}: {file_err}")
-        except Exception as dir_err:
-            print(f"Warning: Could not clear temp inspections directory: {dir_err}")
-
     inspection_id = str(uuid.uuid4())
     
-    # 1. Save uploaded inspection image temporarily
+    # Save incoming inspection image temporarily using your utility function
     saved_image_path = save_temp_inspection_image(inspection_id, uploaded_image)
 
-    # 2. Initialize tracking record
+    # Initialize tracker state
     INSPECTIONS_DB[inspection_id] = {
-        "status": "processing",
-        "part_number": part_number,
+        "inspection_id": inspection_id,
+        "status": "queued",
+        "logs": [f"Inspection session created (ID: {inspection_id})."],
         "results": None,
         "error": None
     }
 
-    # 3. Offload heavy CV pipeline to background thread
+    # Dispatch to background thread task
     background_tasks.add_task(
         run_heavy_inspection_task, 
         inspection_id, 
@@ -899,12 +916,241 @@ async def verify_inspection(
         saved_image_path
     )
 
-    # 4. Return instant response so UI never hangs
     return {
         "status": "queued",
         "inspection_id": inspection_id,
-        "message": "Inspection started in background. Poll results endpoint."
+        "message": "Inspection started in background. Poll logs endpoint."
     }
+
+
+@app.get("/api/v1/metrology/inspections/{inspection_id}/logs")
+async def get_inspection_logs(inspection_id: str):
+    """Polling endpoint for Django/UI to fetch live logs."""
+    if inspection_id not in INSPECTIONS_DB:
+        raise HTTPException(status_code=404, detail="Inspection ID not found.")
+    return INSPECTIONS_DB[inspection_id]
+
+
+@app.get("/api/v1/metrology/inspections/{inspection_id}/results")
+async def get_inspection_results(inspection_id: str):
+    """Fetches final structured results once status is completed."""
+    if inspection_id not in INSPECTIONS_DB:
+        raise HTTPException(status_code=404, detail="Inspection ID not found.")
+    
+    data = INSPECTIONS_DB[inspection_id]
+    if data["status"] != "completed":
+        return {
+            "status": data["status"], 
+            "message": "Results are not ready yet.", 
+            "results": None
+        }
+    
+    return {
+        "status": "completed",
+        "inspection_id": inspection_id,
+        "results": data["results"]
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# def run_heavy_inspection_task(inspection_id: str, part_number: str, height: float, saved_image_path: Path):
+#     """Background task with live stdout redirection to UI log buffer for inspection."""
+#     INSPECTIONS_DB[inspection_id]["status"] = "processing"
+    
+#     original_stdout = sys.stdout
+#     sys.stdout = ExecutionLogger(inspection_id, original_stdout) # Reusing your ExecutionLogger class
+
+#     try:
+#         print(f"Starting inspection process for part: {part_number}...")
+        
+#         # 1. Fetch DB ground truth
+#         print("Fetching ground truth configuration from database...")
+#         part_data = get_part_data_from_db(part_number)
+#         if not part_data:
+#             raise ValueError(f"No ground truth data found for part '{part_number}'")
+            
+#         ground_truth_json = part_data["drawing_config"]
+#         ground_truth_image_path = Path(part_data["reference_image_path"])
+
+#         # 2. Run Orientation Alignment
+#         print("Running orientation alignment...")
+#         orientation_result = run_orientation_alignment(
+#             inspection_image_path=saved_image_path,
+#             ground_truth_image_path=ground_truth_image_path,
+#             ground_truth_json=ground_truth_json,
+#             part_number=part_number,
+#         )
+
+#         if orientation_result["orientation_status"] != "success":
+#             raise RuntimeError("Could not determine part orientation.")
+
+#         # 3. Run Metric Computation with Dynamic Paths
+#         print("Running metrology metric computation...")
+#         product_height = height if height is not None else 0.0
+        
+#         # Define dynamic paths
+#         target_metrics_path = Path(r"C:\Users\karth\Downloads\main_folder\rsm\Visual Metrology\visual_metrics\drawing_dimensions_new.json")
+#         aligned_image_path = Path(orientation_result["aligned_image_path"])
+        
+#         # Ensure the part's JSON is copied fresh to the metrics path first (as we set up earlier)
+#         part_dir = Path(r"C:\Users\karth\Downloads\main_folder\rsm\Visual Metrology\visual_partlayout\ground_truth") / str(part_number)
+#         json_files = list(part_dir.glob("*.json"))
+#         if json_files:
+#             import json
+#             import shutil
+            
+#             with open(json_files[0], "r", encoding="utf-8") as f:
+#                 raw_data = json.load(f)
+            
+#             metrics_data = raw_data["annotations_data"] if "annotations_data" in raw_data else raw_data
+            
+#             with open(target_metrics_path, "w", encoding="utf-8") as f:
+#                 json.dump(metrics_data, f, indent=4)
+#         else:
+#             raise FileNotFoundError(f"No JSON configuration found in {part_dir}")
+
+#         # Call run_metrology_inspection passing the dynamic variables
+#         report_data = run_metrology_inspection(
+#             image_path=aligned_image_path,
+#             json_path=target_metrics_path,
+#             product_height_mm=product_height,
+#         )
+
+#         if isinstance(report_data, dict):
+#             report_data.pop("overlay_image_base64", None)
+
+#         # 4. Finalize
+#         INSPECTIONS_DB[inspection_id]["status"] = "completed"
+#         INSPECTIONS_DB[inspection_id]["results"] = {
+#             "part_number": part_number,
+#             "orientation": orientation_result,
+#             **(report_data or {})
+#         }
+#         print("✓ Inspection completed successfully.")
+
+#     except Exception as e:
+#         INSPECTIONS_DB[inspection_id]["status"] = "failed"
+#         INSPECTIONS_DB[inspection_id]["error"] = str(e)
+#         print(f"Inspection failed: {str(e)}")
+#         logger.error(f"Inspection {inspection_id} failed: {str(e)}")
+
+#     finally:
+#         sys.stdout = original_stdout
+
+# @app.post("/api/v1/metrology/inspect")
+# async def verify_inspection(
+#     background_tasks: BackgroundTasks,
+#     part_number: str = Form(...),
+#     height: float = Form(None),
+#     image: UploadFile = File(None),
+#     file: UploadFile = File(None)
+# ):
+#     uploaded_image = image or file
+#     if not uploaded_image:
+#         raise HTTPException(status_code=400, detail="Image file is required.")
+
+#     # A. Flush/Delete old drawing_dimensions_new.json so it doesn't bleed over
+#     target_metrics_path = Path(r"C:\Users\karth\Downloads\main_folder\rsm\Visual Metrology\visual_metrics\drawing_dimensions_new.json")
+#     if target_metrics_path.exists():
+#         try:
+#             target_metrics_path.unlink()
+#         except Exception as e:
+#             print(f"Warning: Could not remove old metrics JSON: {e}")
+
+#     # B. Flush out the temp inspection folder (delete all old temp images)
+#     temp_dir = Path(r"C:\Users\karth\Downloads\main_folder\rsm\Visual Metrology\visual_metrology\data\output\temp_inspections")
+#     if temp_dir.exists():
+#         try:
+#             for temp_file in temp_dir.glob("*.*"):
+#                 try:
+#                     temp_file.unlink()
+#                 except Exception as file_err:
+#                     print(f"Could not delete temp file {temp_file.name}: {file_err}")
+#         except Exception as dir_err:
+#             print(f"Warning: Could not clear temp inspections directory: {dir_err}")
+
+#     inspection_id = str(uuid.uuid4())
+    
+#     # 1. Save uploaded inspection image temporarily
+#     saved_image_path = save_temp_inspection_image(inspection_id, uploaded_image)
+
+#     # 2. Initialize tracking record
+#     INSPECTIONS_DB[inspection_id] = {
+#         "status": "processing",
+#         "part_number": part_number,
+#         "results": None,
+#         "error": None
+#     }
+
+#     # 3. Offload heavy CV pipeline to background thread
+#     background_tasks.add_task(
+#         run_heavy_inspection_task, 
+#         inspection_id, 
+#         part_number, 
+#         height, 
+#         saved_image_path
+#     )
+
+#     # 4. Return instant response so UI never hangs
+#     return {
+#         "status": "queued",
+#         "inspection_id": inspection_id,
+#         "message": "Inspection started in background. Poll results endpoint."
+#     }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
