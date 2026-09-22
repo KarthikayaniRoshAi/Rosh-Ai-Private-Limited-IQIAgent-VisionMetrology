@@ -2287,8 +2287,11 @@ def detect_rectangle_from_annotation(
             0.01
         )
 
-        vx = float(vx)
-        vy = float(vy)
+        # vx = float(vx)
+        # vy = float(vy)
+
+        vx = float(np.asarray(vx).reshape(-1)[0])
+        vy = float(np.asarray(vy).reshape(-1)[0])
 
         # Angle of top edge relative to image horizontal
         rotation_angle = np.degrees(
@@ -2550,19 +2553,19 @@ def detect_rectangle_from_annotation(
             lx = int(round(left_edge[0]))
             rx = int(round(right_edge[0]))
 
-            print("\n[LEFT PROFILE]")
-            for xx in range(max(0, lx - 10), min(w, lx + 11)):
-                print(
-                    f"x={xx:4d} "
-                    f"I={roi_float[y, xx]:6.1f}"
-                )
+            # print("\n[LEFT PROFILE]")
+            # for xx in range(max(0, lx - 10), min(w, lx + 11)):
+            #     print(
+            #         f"x={xx:4d} "
+            #         f"I={roi_float[y, xx]:6.1f}"
+            #     )
 
-            print("\n[RIGHT PROFILE]")
-            for xx in range(max(0, rx - 10), min(w, rx + 11)):
-                print(
-                    f"x={xx:4d} "
-                    f"I={roi_float[y, xx]:6.1f}"
-                )
+            # print("\n[RIGHT PROFILE]")
+            # for xx in range(max(0, rx - 10), min(w, rx + 11)):
+            #     print(
+            #         f"x={xx:4d} "
+            #         f"I={roi_float[y, xx]:6.1f}"
+            #     )
 
         # width = (
         #     right_edge[0] -
@@ -2740,7 +2743,6 @@ def detect_rectangle_from_annotation(
                 f"dark={t[2]:.1f}"
             )
     
-
     # ============================================================
     # 9. REMOVE OUTLIERS
     # ============================================================
@@ -3902,6 +3904,7 @@ def circle_result(
     result: Dict[str, Any] = {
         "feature_id": feature.get("id"),
         "feature_type": feature.get("type"),
+        "annotation_id": annotation.get("annotation_id"),
         "annotation_index": annotation_index,
         "annotation_shape": shape_name(annotation),
         "annotation_tag_name": annotation.get("tag_name"),
@@ -3978,11 +3981,12 @@ def rectangle_result(
     result = {
         "feature_id": feature.get("id"),
         "feature_type": feature.get("type"),
+        "annotation_id": annotation.get("annotation_id"),
         "annotation_index": annotation_index,
         "annotation_shape": shape_name(annotation),
         "annotation_tag_name": annotation.get("tag_name"),
         "annotation_tag_id": annotation.get("tag_id"),
-
+        
         # JSON reference
         "annotation_left_px": b["left"],
         "annotation_top_px": b["top"],
@@ -4610,7 +4614,7 @@ def main() -> None:
 def run_metrology_inspection(image_path: Path, json_path: Path, product_height_mm: float):
     print(f"Running metrology on image: {image_path}")
     print(f"Using drawing JSON config: {json_path}")
-    TOTAL_CAMERA_TO_BASE_MM = 560.0
+    TOTAL_CAMERA_TO_BASE_MM = 438.0
 
     if product_height_mm >= TOTAL_CAMERA_TO_BASE_MM:
         raise ValueError(
@@ -4804,8 +4808,14 @@ def run_metrology_inspection(image_path: Path, json_path: Path, product_height_m
     with json_path.open("w", encoding="utf-8") as f:
         json.dump(full_report, f, indent=4, ensure_ascii=False)
 
+    # valid_results = [
+    #     {k: v for k, v in row.items() if not k.startswith("annotation_")}
+    #     for row in results 
+    #     if row.get("status") in {"MEASURED", "PASS", "FAIL"}
+    # ]
+
     valid_results = [
-        {k: v for k, v in row.items() if not k.startswith("annotation_")}
+        {k: v for k, v in row.items() if not k.startswith("annotation_") or k == "annotation_id"}
         for row in results 
         if row.get("status") in {"MEASURED", "PASS", "FAIL"}
     ]
