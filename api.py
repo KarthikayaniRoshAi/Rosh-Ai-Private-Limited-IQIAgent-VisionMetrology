@@ -297,6 +297,44 @@ async def get_execution_results(execution_id: str):
     }
 
 
+import shutil
+from pathlib import Path
+import json
+
+def ensure_ground_truth_folder(part_number: str, uploaded_image_file, annotations_data=None):
+    base_gt_dir = Path(r"C:\Users\karth\Downloads\main_folder\rsm\Visual Metrology\visual_partlayout\ground_truth")
+    part_gt_dir = base_gt_dir / str(part_number)
+    
+    # 1. Create directory if it doesn't exist
+    part_gt_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 2. Use 'filename' for FastAPI UploadFile instead of 'name'
+    orig_filename = getattr(uploaded_image_file, "filename", "image.jpg")
+    image_extension = Path(orig_filename).suffix or ".jpg"
+    reference_image_filename = f"{part_number}{image_extension}"
+    reference_image_path = part_gt_dir / reference_image_filename
+    
+    # Save the reference image if it doesn't exist yet
+    if not reference_image_path.exists():
+        uploaded_image_file.file.seek(0)
+        with open(reference_image_path, "wb") as buffer:
+            shutil.copyfileobj(uploaded_image_file.file, buffer)
+                
+    # 3. Create a default ground truth JSON configuration file if it doesn't exist
+    json_config_path = part_gt_dir / f"{part_number}.json"
+    if not json_config_path.exists():
+        default_config = {
+            "drawingId": "drawing_analysis_1",
+            "part_number": part_number,
+            "drawingFeatures": []
+        }
+        with open(json_config_path, "w", encoding="utf-8") as f:
+            json.dump(default_config, f, indent=4)
+            
+    return str(reference_image_path), str(json_config_path)
+
+
+
 @app.post("/api/v1/metrology/save-plc")
 async def save_position_layout(
     project_id: str = Form(...),
@@ -892,6 +930,11 @@ async def verify_inspection_endpoint(
     uploaded_image = image or file
     if not uploaded_image:
         raise HTTPException(status_code=400, detail="Image file is required.")
+
+    try:
+        ensure_ground_truth_folder(part_number, uploaded_image)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create ground truth assets: {str(e)}")
 
     inspection_id = str(uuid.uuid4())
     
