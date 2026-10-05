@@ -36,6 +36,132 @@ BASE_DIR = Path(__file__).resolve().parent
 # Load main framework config at app startup
 main_config = ConfigLoader("configs/main_config.yaml").get()
 
+def normalize_drawing_data(yaml_data: dict, base_filename: str) -> dict:
+
+    if not isinstance(yaml_data, dict):
+        return yaml_data
+
+    # Normalize Metadata
+    metadata = yaml_data.get("metadata", {})
+    normalized_metadata = {
+        "drawing_number": metadata.get("dwg_no") or metadata.get("drawing_number", "UNSPECIFIED"),
+        "title": metadata.get("title", ""),
+        "revision": metadata.get("revision", ""),
+        "sheet": str(metadata.get("sheet", "1")).split(" of ")[0],
+        "sheets_total": str(metadata.get("sheet", "1 of 1")).split(" of ")[-1] if " of " in str(metadata.get("sheet", "")) else "1",
+        "scale": metadata.get("scale", "1:1"),
+        "projection": metadata.get("projection", ""),
+        "drawn_by": metadata.get("drawn_by", ""),
+        "checked_by": metadata.get("checked_by", ""),
+        "approved_by": metadata.get("approved_by", ""),
+        "date": metadata.get("date", "")
+    }
+
+    # Normalize Units
+    units_raw = yaml_data.get("units")
+    if isinstance(units_raw, str):
+        normalized_units = {"linear": units_raw, "angular": "deg"}
+    elif isinstance(units_raw, dict):
+        normalized_units = {
+            "linear": units_raw.get("linear", "mm"),
+            "angular": units_raw.get("angular", "deg")
+        }
+    else:
+        normalized_units = {"linear": "mm", "angular": "deg"}
+
+    # Normalize Material
+    mat_raw = yaml_data.get("material")
+    if isinstance(mat_raw, str):
+        normalized_material = {"specification": mat_raw, "hardness": "", "heat_treatment": ""}
+    elif isinstance(mat_raw, dict):
+        normalized_material = {
+            "specification": mat_raw.get("specification", "UNSPECIFIED"),
+            "hardness": mat_raw.get("hardness", ""),
+            "heat_treatment": mat_raw.get("heat_treatment", "")
+        }
+    else:
+        normalized_material = {"specification": "UNSPECIFIED", "hardness": "", "heat_treatment": ""}
+
+    # Normalize Finish
+    finish_raw = yaml_data.get("finish")
+    if isinstance(finish_raw, str):
+        finish_reqs = [finish_raw] if finish_raw else []
+    elif isinstance(finish_raw, list):
+        finish_reqs = finish_raw
+    elif isinstance(finish_raw, dict):
+        finish_reqs = finish_raw.get("requirements", [])
+    else:
+        finish_reqs = []
+
+    normalized_finish = {"requirements": finish_reqs}
+
+    # Normalize Features to match Spacer Coupling schema strictly
+    raw_features = yaml_data.get("features", [])
+    normalized_features = []
+
+    for idx, feat in enumerate(raw_features, start=1):
+        if not isinstance(feat, dict):
+            continue
+            
+        # If it's already using the structured format, keep it as-is
+        if any(k in feat for k in ["parameters", "geometry", "hole", "pattern"]):
+            normalized_features.append(feat)
+            continue
+
+        feat_type = feat.get("feature_type", "generic_feature")
+        feat_id = feat.get("feature_id", f"F{idx}")
+        
+        norm_feat = {
+            "id": feat_id,
+            "name": feat.get("notes") or feat_type.replace("_", " ").title(),
+            "type": feat_type,
+            "references": ["VIEW-DEFAULT"]
+        }
+
+        # Map flat attributes cleanly into geometry or parameters
+        if feat_type in ["thickness", "linear_dimension", "basic_dimension"]:
+            geo_dict = {
+                "value": feat.get("value"),
+                "units": feat.get("unit", "mm")
+            }
+            if feat.get("display_text"):
+                geo_dict["display_text"] = feat.get("display_text")
+            if feat.get("tolerance"):
+                geo_dict["tolerance"] = feat.get("tolerance")
+            norm_feat["geometry"] = geo_dict
+            
+        elif feat_type == "fillet":
+            norm_feat["parameters"] = {
+                "radius": feat.get("radius"),
+                "quantity": feat.get("quantity"),
+                "modifiers": feat.get("modifiers", ""),
+                "units": feat.get("unit", "mm"),
+                "application": feat.get("notes", "Corner fillet")
+            }
+        elif feat_type == "centerline":
+            norm_feat["parameters"] = {
+                "quantity": feat.get("quantity"),
+                "notes": feat.get("notes", "CL")
+            }
+        else:
+            norm_feat["parameters"] = {k: v for k, v in feat.items() if k not in ["feature_id", "feature_type"]}
+
+        normalized_features.append(norm_feat)
+
+    return {
+        "metadata": normalized_metadata,
+        "units": normalized_units,
+        "material": normalized_material,
+        "finish": normalized_finish,
+        "manufacturing": {"special_instructions": ["DO NOT SCALE DRAWING"]},
+        "general_tolerances": yaml_data.get("general_tolerances", {"linear": "", "angular": "", "notes": ""}),
+        "surface_roughness": yaml_data.get("surface_roughness", {"ra": "", "notes": ""}),
+        "views": yaml_data.get("views", [{"id": "VIEW-DEFAULT", "name": "General Arrangement", "scale": normalized_metadata["scale"]}]),
+        "coordinate_system": yaml_data.get("coordinate_system", {"definition": "Global CSYS", "origin": "UNSPECIFIED", "axes": {}, "datums": []}),
+        "features": normalized_features,
+        "notes": yaml_data.get("notes", [])
+    }
+
 def load_generated_yaml_results(file_paths: List[str]) -> List[Dict]:
     """
     Finds and converts <part_name>_drawing_analysis.yaml into an array of JSON objects.
@@ -69,6 +195,7 @@ def load_generated_yaml_results(file_paths: List[str]) -> List[Dict]:
             try:
                 with open(target_yaml_path, 'r', encoding='utf-8') as f:
                     yaml_content = yaml.safe_load(f)
+                    yaml_content = normalize_drawing_data(yaml_content, base_filename)
                 print(f"✓ Successfully loaded YAML: {target_yaml_path}")
             except Exception as read_err:
                 print(f"Error reading YAML {target_yaml_path}: {str(read_err)}")
@@ -993,17 +1120,6 @@ async def get_inspection_results(inspection_id: str):
         "inspection_id": inspection_id,
         "results": data["results"]
     }
-
-
-
-
-
-
-
-
-
-
-
 
 
 

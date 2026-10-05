@@ -4847,11 +4847,7 @@ def run_metrology_inspection(image_path: Path, json_path: Path, product_height_m
 
 
 
-
-
-
 # from __future__ import annotations
-
 # import argparse
 # import base64
 # import csv
