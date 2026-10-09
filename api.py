@@ -22,6 +22,8 @@ import cv2
 import numpy as np
 import json
 from pathlib import Path
+import shutil
+
 
 app = FastAPI(
     title="IQI™ Visual Metrology Engine API",
@@ -424,42 +426,6 @@ async def get_execution_results(execution_id: str):
     }
 
 
-import shutil
-from pathlib import Path
-import json
-
-def ensure_ground_truth_folder(part_number: str, uploaded_image_file, annotations_data=None):
-    base_gt_dir = Path(r"C:\Users\karth\Downloads\main_folder\rsm\Visual Metrology\visual_partlayout\ground_truth")
-    part_gt_dir = base_gt_dir / str(part_number)
-    
-    # 1. Create directory if it doesn't exist
-    part_gt_dir.mkdir(parents=True, exist_ok=True)
-    
-    # 2. Use 'filename' for FastAPI UploadFile instead of 'name'
-    orig_filename = getattr(uploaded_image_file, "filename", "image.jpg")
-    image_extension = Path(orig_filename).suffix or ".jpg"
-    reference_image_filename = f"{part_number}{image_extension}"
-    reference_image_path = part_gt_dir / reference_image_filename
-    
-    # Save the reference image if it doesn't exist yet
-    if not reference_image_path.exists():
-        uploaded_image_file.file.seek(0)
-        with open(reference_image_path, "wb") as buffer:
-            shutil.copyfileobj(uploaded_image_file.file, buffer)
-                
-    # 3. Create a default ground truth JSON configuration file if it doesn't exist
-    json_config_path = part_gt_dir / f"{part_number}.json"
-    if not json_config_path.exists():
-        default_config = {
-            "drawingId": "drawing_analysis_1",
-            "part_number": part_number,
-            "drawingFeatures": []
-        }
-        with open(json_config_path, "w", encoding="utf-8") as f:
-            json.dump(default_config, f, indent=4)
-            
-    return str(reference_image_path), str(json_config_path)
-
 
 
 @app.post("/api/v1/metrology/save-plc")
@@ -561,22 +527,60 @@ async def save_position_layout(
             detail={"error": "Failed to save position capture", "details": str(e)}
         )
 
+# @app.get("/api/v1/metrology/captures")
+# async def list_position_captures():
+#     """
+#     Scans the visual_metrology/data/output directories and returns 
+#     all saved position capture records.
+#     """
+#     try:
+#         base_dir = Path(__file__).resolve().parent
+#         output_base_dir = base_dir / "visual_metrology" / "data" / "output"
+        
+#         if not output_base_dir.exists():
+#             return []
+
+#         captures = []
+#         # Search through all project folders and meta.json files
+#         for meta_file in output_base_dir.glob("**/ *_meta.json"):
+#             try:
+#                 with open(meta_file, "r", encoding="utf-8") as f:
+#                     data = json.load(f)
+#                     captures.append(data)
+#             except Exception as read_err:
+#                 logger.warning(f"Could not read meta file {meta_file}: {read_err}")
+
+#         # Sort by creation or file system modification time (newest first)
+#         captures.sort(key=lambda x: str(x.get("id", "")), reverse=True)
+
+#         return {
+#             "status": "success",
+#             "count": len(captures),
+#             "results": captures
+#         }
+
+#     except Exception as e:
+#         logger.exception(f"Failed to list position captures: {e}")
+#         raise HTTPException(
+#             status_code=500,
+#             detail={"error": "Failed to list position captures", "details": str(e)}
+#         )
+
 @app.get("/api/v1/metrology/captures")
 async def list_position_captures():
     """
-    Scans the visual_metrology/data/output directories and returns 
+    Scans the visual_metrology/data/output directories and returns
     all saved position capture records.
     """
     try:
         base_dir = Path(__file__).resolve().parent
         output_base_dir = base_dir / "visual_metrology" / "data" / "output"
-        
+
         if not output_base_dir.exists():
-            return []
+            return {"status": "success", "count": 0, "results": []}
 
         captures = []
-        # Search through all project folders and meta.json files
-        for meta_file in output_base_dir.glob("**/ *_meta.json"):
+        for meta_file in output_base_dir.glob("**/*_meta.json"):
             try:
                 with open(meta_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
@@ -584,7 +588,6 @@ async def list_position_captures():
             except Exception as read_err:
                 logger.warning(f"Could not read meta file {meta_file}: {read_err}")
 
-        # Sort by creation or file system modification time (newest first)
         captures.sort(key=lambda x: str(x.get("id", "")), reverse=True)
 
         return {
@@ -599,68 +602,165 @@ async def list_position_captures():
             status_code=500,
             detail={"error": "Failed to list position captures", "details": str(e)}
         )
+    
+GT_DIR = Path(
+    r"C:\Users\karth\Downloads\main_folder\rsm\Visual Metrology"
+    r"\visual_partlayout\ground_truth"
+)
 
-@app.delete("/api/v1/metrology/captures/{record_id}")
-async def delete_position_capture(record_id: str):
+
+def _gt_part_dir(part_number: str) -> Path:
+    """Resolve a part's folder safely inside GT_DIR."""
+
+    name = str(part_number).strip()
+
+    if (
+        not name
+        or name in {".", ".."}
+        or "/" in name
+        or "\\" in name
+    ):
+        raise ValueError(f"Invalid part number: {part_number!r}")
+
+    base = GT_DIR.resolve()
+    target = (base / name).resolve()
+
+    if base not in target.parents:
+        raise ValueError("Part folder escapes ground-truth directory")
+
+    return target
+
+
+def delete_ground_truth(part_number: str) -> bool:
     """
-    Deletes a specific position capture record, its metadata file, 
-    and its saved layout image from disk.
+    Delete all ground-truth files for a part.
+    Returns True if the folder was deleted, otherwise False.
     """
+
     try:
-        base_dir = Path(__file__).resolve().parent
-        output_base_dir = base_dir / "visual_metrology" / "data" / "output"
-        
-        if not output_base_dir.exists():
-            raise HTTPException(status_code=404, detail="Capture directory not found.")
+        part_dir = _gt_part_dir(part_number)
 
-        target_meta_file = None
-        target_project_dir = None
+        logger.info("Ground-truth folder: %s", part_dir)
 
-        # Locate the metadata file matching the record_id
-        for meta_file in output_base_dir.glob(f"**/{record_id}_meta.json"):
-            target_meta_file = meta_file
-            target_project_dir = meta_file.parent
-            break
-
-        if not target_meta_file or not target_meta_file.exists():
-            raise HTTPException(
-                status_code=404, 
-                detail=f"Position capture with ID '{record_id}' not found."
+        if not part_dir.is_dir():
+            logger.warning(
+                "Ground-truth folder not found for part %r",
+                part_number,
             )
+            return False
 
-        # Read meta file to locate the image path if needed
-        with open(target_meta_file, "r", encoding="utf-8") as f:
-            meta_data = json.load(f)
-            image_path = meta_data.get("image_path")
+        shutil.rmtree(part_dir)
 
-        # Delete the image file if it exists
-        if image_path and Path(image_path).exists():
-            Path(image_path).unlink()
-            logger.info(f"Deleted layout image: {image_path}")
+        logger.info(
+            "Deleted ground-truth folder for part %r: %s",
+            part_number,
+            part_dir,
+        )
+        return True
 
-        # Delete the metadata JSON file
-        target_meta_file.unlink()
-        logger.info(f"Deleted metadata file: {target_meta_file}")
+    except (ValueError, OSError) as exc:
+        logger.warning(
+            "Could not delete ground truth for %r: %s",
+            part_number,
+            exc,
+        )
+        return False
 
-        # Optional: Clean up project folder if it is completely empty now
-        if target_project_dir and target_project_dir.exists():
-            if not any(target_project_dir.iterdir()):
-                shutil.rmtree(target_project_dir)
-                logger.info(f"Removed empty project output directory: {target_project_dir}")
+
+@app.delete("/api/v1/metrology/ground-truth/{part_number}")
+async def delete_ground_truth_api(part_number: str):
+    """Delete the ground-truth folder for one part."""
+
+    if not part_number.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Part number is required.",
+        )
+
+    try:
+        deleted = delete_ground_truth(part_number)
 
         return {
             "status": "success",
-            "message": f"Position capture '{record_id}' deleted successfully."
+            "part_number": part_number,
+            "deleted": deleted,
+            "message": (
+                "Ground truth deleted successfully."
+                if deleted
+                else "Ground-truth folder was not found or could not be deleted."
+            ),
         }
 
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        logger.exception(f"Failed to delete position capture {record_id}: {e}")
+    except Exception as exc:
+        logger.exception(
+            "Ground-truth deletion failed for %r",
+            part_number,
+        )
         raise HTTPException(
             status_code=500,
-            detail={"error": "Failed to delete position capture", "details": str(e)}
+            detail={
+                "error": "Ground-truth deletion failed",
+                "details": str(exc),
+            },
         )
+# @app.delete("/api/v1/metrology/captures/{record_id}")
+# async def delete_position_capture(record_id: str):
+
+#     try:
+#         base_dir = Path(__file__).resolve().parent
+#         output_base_dir = base_dir / "visual_metrology" / "data" / "output"
+        
+#         if not output_base_dir.exists():
+#             raise HTTPException(status_code=404, detail="Capture directory not found.")
+
+#         target_meta_file = None
+#         target_project_dir = None
+
+#         # Locate the metadata file matching the record_id
+#         for meta_file in output_base_dir.glob(f"**/{record_id}_meta.json"):
+#             target_meta_file = meta_file
+#             target_project_dir = meta_file.parent
+#             break
+
+#         if not target_meta_file or not target_meta_file.exists():
+#             raise HTTPException(
+#                 status_code=404, 
+#                 detail=f"Position capture with ID '{record_id}' not found."
+#             )
+
+#         # Read meta file to locate the image path if needed
+#         with open(target_meta_file, "r", encoding="utf-8") as f:
+#             meta_data = json.load(f)
+#             image_path = meta_data.get("image_path")
+
+#         # Delete the image file if it exists
+#         if image_path and Path(image_path).exists():
+#             Path(image_path).unlink()
+#             logger.info(f"Deleted layout image: {image_path}")
+
+#         # Delete the metadata JSON file
+#         target_meta_file.unlink()
+#         logger.info(f"Deleted metadata file: {target_meta_file}")
+
+#         # Optional: Clean up project folder if it is completely empty now
+#         if target_project_dir and target_project_dir.exists():
+#             if not any(target_project_dir.iterdir()):
+#                 shutil.rmtree(target_project_dir)
+#                 logger.info(f"Removed empty project output directory: {target_project_dir}")
+
+#         return {
+#             "status": "success",
+#             "message": f"Position capture '{record_id}' deleted successfully."
+#         }
+
+#     except HTTPException as he:
+#         raise he
+#     except Exception as e:
+#         logger.exception(f"Failed to delete position capture {record_id}: {e}")
+#         raise HTTPException(
+#             status_code=500,
+#             detail={"error": "Failed to delete position capture", "details": str(e)}
+#         )
 
 
 def safe_filename(filename: Optional[str]) -> str:
@@ -751,45 +851,103 @@ def clean_output_directory(file_paths: List[str]):
                 clean_err,
             )
 
+GT_DIR = Path(r"C:\Users\karth\Downloads\main_folder\rsm\Visual Metrology\visual_partlayout\ground_truth")
 
-def get_part_data_from_db(part_number: str) -> Optional[Dict]:
+def _gt_part_dir(part_number: str) -> Path:
+    name = Path(str(part_number)).name          # blocks ../ tricks
+    if not name or name in {".", ".."}:
+        raise ValueError(f"Invalid part number: {part_number!r}")
+    p = (GT_DIR / name).resolve()
+    if GT_DIR.resolve() not in p.parents:
+        raise ValueError("Part folder escapes ground truth directory")
+    return p
 
-    try:
-        print(f"Fetching ground truth configuration for part: {part_number}...")
+def delete_ground_truth(part_number: str):
+    d = _gt_part_dir(part_number)
+    if d.exists():
+        shutil.rmtree(d)
+        logger.info(f"Deleted ground truth folder: {d}")
+
+def write_ground_truth(part_number: str, image_file: UploadFile, annotations_data: dict):
+    """Always replaces the part's ground truth with the latest capture."""
+    d = _gt_part_dir(part_number)
+    if d.exists():
+        shutil.rmtree(d)
+    d.mkdir(parents=True)
+
+    ext = Path(image_file.filename or "").suffix or ".jpg"
+    image_file.file.seek(0)
+    with open(d / f"{part_number}{ext}", "wb") as f:
+        shutil.copyfileobj(image_file.file, f)
+
+    (d / f"{part_number}.json").write_text(
+        json.dumps(annotations_data, indent=4), encoding="utf-8"
+    )
+
+def get_part_data_from_db(part_number: str):
+    part_dir = GT_DIR / str(part_number)
+    if not part_dir.exists():
+        return None
+
+    exts = {".jpg", ".jpeg", ".png"}
+    images = sorted(p for p in part_dir.iterdir() if p.suffix.lower() in exts)
+
+    def has_features(p):
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+            return bool(d.get("annotations_data", d).get("drawingFeatures"))
+        except Exception:
+            return False
+
+    jsons = [p for p in sorted(part_dir.glob("*.json")) if has_features(p)]
+    if not images or not jsons:
+        print(f"Ground truth incomplete in {part_dir}: {images=}, {jsons=}")
+        return None
+
+    return {
+        "reference_image_path": str(images[0]),
+        "drawing_config": json.loads(jsons[0].read_text(encoding="utf-8")),
+        "json_path": str(jsons[0]),
+    }
+
+# def get_part_data_from_db(part_number: str) -> Optional[Dict]:
+
+#     try:
+#         print(f"Fetching ground truth configuration for part: {part_number}...")
         
-        # Point directly to the folder where Django saves the ground truth files
-        base_ground_truth_dir = Path(r"C:\Users\karth\Downloads\main_folder\rsm\Visual Metrology\visual_partlayout\ground_truth")
-        part_dir = base_ground_truth_dir / str(part_number)
+#         # Point directly to the folder where Django saves the ground truth files
+#         base_ground_truth_dir = Path(r"C:\Users\karth\Downloads\main_folder\rsm\Visual Metrology\visual_partlayout\ground_truth")
+#         part_dir = base_ground_truth_dir / str(part_number)
         
-        if not part_dir.exists():
-            print(f"Ground truth directory for part {part_number} does not exist at {part_dir}")
-            return None
+#         if not part_dir.exists():
+#             print(f"Ground truth directory for part {part_number} does not exist at {part_dir}")
+#             return None
         
-        # Find the image file inside the part folder
-        image_files = list(part_dir.glob("*.jpg")) + list(part_dir.glob("*.png")) + list(part_dir.glob("*.jpeg"))
+#         # Find the image file inside the part folder
+#         image_files = list(part_dir.glob("*.jpg")) + list(part_dir.glob("*.png")) + list(part_dir.glob("*.jpeg"))
         
-        if not image_files:
-            print(f"No ground truth image found inside {part_dir}")
-            return None
+#         if not image_files:
+#             print(f"No ground truth image found inside {part_dir}")
+#             return None
             
-        reference_image_path = image_files[0]
+#         reference_image_path = image_files[0]
         
-        # Automatically find any JSON file in the folder (handles metadata.json, part_number.json, etc.)
-        drawing_config = {}
-        json_files = list(part_dir.glob("*.json"))
-        if json_files:
-            json_path = json_files[0]  # Take the first JSON file found
-            with open(json_path, "r", encoding="utf-8") as f:
-                drawing_config = json.load(f)
+#         # Automatically find any JSON file in the folder (handles metadata.json, part_number.json, etc.)
+#         drawing_config = {}
+#         json_files = list(part_dir.glob("*.json"))
+#         if json_files:
+#             json_path = json_files[0]  # Take the first JSON file found
+#             with open(json_path, "r", encoding="utf-8") as f:
+#                 drawing_config = json.load(f)
 
-        return {
-            "reference_image_path": str(reference_image_path),
-            "drawing_config": drawing_config
-        }
+#         return {
+#             "reference_image_path": str(reference_image_path),
+#             "drawing_config": drawing_config
+#         }
 
-    except Exception as e:
-        print(f"Error fetching part data for {part_number}: {e}")
-        raise
+#     except Exception as e:
+#         print(f"Error fetching part data for {part_number}: {e}")
+#         raise
 
 
 def run_orientation_alignment(
@@ -1058,10 +1216,9 @@ async def verify_inspection_endpoint(
     if not uploaded_image:
         raise HTTPException(status_code=400, detail="Image file is required.")
 
-    try:
-        ensure_ground_truth_folder(part_number, uploaded_image)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create ground truth assets: {str(e)}")
+    if get_part_data_from_db(part_number) is None:
+        raise HTTPException(status_code=404,
+            detail=f"No ground truth found for part '{part_number}'. Capture it first.")
 
     inspection_id = str(uuid.uuid4())
     
@@ -1121,6 +1278,9 @@ async def get_inspection_results(inspection_id: str):
         "results": data["results"]
     }
 
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("api:app", host="0.0.0.0", port=8001, reload=True)
 
 
 
@@ -1838,10 +1998,4 @@ async def get_inspection_results(inspection_id: str):
     #     response.update(report_data)
 
     # return response
-
-if __name__ == "__main__":
-    import uvicorn
-    # Start ASGI Uvicorn server on port 8001
-    uvicorn.run("api:app", host="0.0.0.0", port=8001, reload=True)
-
 
